@@ -8,7 +8,8 @@
     "build:offline": "node test/run-build.mjs",
     "serve": "python3 -m http.server 8790 -d public",
     "shots": "node test/shots.mjs",
-    "audio-check": "node test/audio-check.mjs"
+    "audio-check": "node test/audio-check.mjs",
+    "video": "node video/render-video.mjs"
   },
   "devDependencies": {
     "leaflet": "1.9.4",
