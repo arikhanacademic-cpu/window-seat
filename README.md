@@ -1,12 +1,27 @@
 # Window Seat
 
-Take a window seat on a real train crossing the Swiss Alps from Zermatt to St. Moritz, right now.
+Take a window seat on a real train crossing the Swiss Alps, right now. Choose from three lines: the Glacier Express route (Zermatt → St. Moritz), the Bernina line (St. Moritz → Tirano, over the Bernina Pass to Italy) and the Gotthard Panorama line (Arth-Goldau → Bellinzona, with the Wassen loops).
 
 Pick a train that's on the line, and you ride along in real time: the real track, the real mountains, live times and delays. Leave and come back whenever you like. Your train keeps going, and you collect stamps for the landmarks it passes, even while you're away.
 
 It follows the route of the Glacier Express. When the Glacier Express itself isn't running (it takes an autumn break), you ride the regional trains on the same tracks.
 
 ## What you see
+
+**New in this version**
+
+- **Your own train**, visible on the curves ahead, plus **real trains passing** the other way, with a whoosh as they go by
+- **Realistic speed**: the train slows for tight curves and steep climbs instead of gliding at one speed between stations
+- **Station stops**: platforms, blue station signs, shelters and lamps, and a door chime when you arrive and leave
+- **"Coming up" cards** with a short story before each landmark
+- **Meadows**: grass and wildflowers by the line that sway in the live wind; **leaves blowing past** in autumn, blossom in spring
+- **Broadleaf trees** in the valleys that turn yellow and orange in autumn, **low cloud** around the peaks, **sun glare**, and **lakes that mirror the sky**
+- **Night**: lit windows in the villages and lamps on the platforms
+- **Postcards**: ✉ saves the current view as a postcard with the place, height, time and weather, ready to share
+- **A pixel-art boarding screen** that stays up until the mountains around you have loaded
+- **Automatic quality** for phones: lighter mode on weak devices, and lower resolution if the frame rate drops
+- **[How it works](public/how.html)**: a write-up page with diagrams
+
 
 - **The exact railway**, taken from OpenStreetMap: every curve and station, tunnels like the 15.4 km Furka Base Tunnel, and bridges like the Landwasser Viaduct
 - **Real terrain** from elevation data, draped in swisstopo aerial imagery and streamed in around the train
@@ -36,7 +51,7 @@ It follows the route of the Glacier Express. When the Glacier Express itself isn
 
 **Building the route** (`scripts/build-route.mjs`, run by GitHub Actions):
 
-1. Downloads every metre-gauge railway in the corridor from the Overpass API.
+1. Downloads every railway of the right gauge in each route's corridor from the Overpass API (metre gauge for the Glacier and Bernina lines, standard gauge for the Gotthard). Each route in `config.json` builds into `public/data/<route>/`, and the first route has to succeed for the deploy to go ahead.
 2. Builds a graph from the tracks and runs Dijkstra through each station in `config.json`, which gives the exact line (via the Furka Base Tunnel, Chur and the Albula spirals).
 3. Resamples the line every 20 m and marks tunnels and bridges.
 4. Samples each point's height from Terrarium elevation tiles. A small PNG decoder means there are no dependencies. Inside tunnels and on bridges, the height is interpolated between the two ends, so the train goes through mountains and across gorges.
@@ -66,7 +81,11 @@ npm run serve           # then open http://localhost:8790/?lite=1
 | Option | What it does |
 | --- | --- |
 | `?preview=10&km=219` | Ride a sample journey 10× faster, starting near the Landwasser Viaduct. Useful for recording videos. Clearly labelled as not live. |
-| `?lite=1` | Lighter terrain, for slow devices. |
+| `?lite=1` | Lighter terrain, for slow devices (switched on automatically on weak phones). |
+| `?film=1` | Film mode for recording: hides every control and the window frame, adds 2.39:1 cinema bars, a vignette, a calmer camera and an opening title. Keys: **H** shows/hides the controls, **B** toggles the bars, **T** replays the title. `?film=nobars` starts without bars. |
+| `?hq=1` | Never switch to the lighter mode automatically. |
+| `?route=bernina` | Open a route directly: `glacier`, `bernina` or `gotthard`. |
+| `?preview=2&km=40&hour=20` | With preview: pick an evening train to see the night lighting. |
 | `?weather=snow` | Demo weather, labelled as a demo on screen: `clear`, `cloudy`, `rain`, `snow`, `storm` or `fog`. |
 
 ## Deploy
@@ -84,6 +103,6 @@ npm run serve           # then open http://localhost:8790/?lite=1
 - Weather: [Open-Meteo](https://open-meteo.com) (CC BY 4.0)
 - Inspired by [InFlightSimulator](https://inflightsimulator.com/)
 
-This is an independent project. It is not affiliated with Glacier Express, Matterhorn Gotthard Bahn or the Rhaetian Railway.
+This is an independent project. It is not affiliated with Glacier Express, Bernina Express, Matterhorn Gotthard Bahn, the Rhaetian Railway or SBB.
 
 Built by Ari Khan. MIT licence.

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Window Seat works</title>
+<meta name="description" content="How Window Seat turns open Swiss data into a live 3D train ride across the Alps.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{--bg:#f5efe3;--ink:#2a2622;--muted:#6e675c;--line:rgba(42,38,34,.14);--red:#d4202c;--card:#fffaf1;--display:"Fraunces",Georgia,serif;--body:"Inter Tight",Arial,sans-serif;--mono:"JetBrains Mono",monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#17161b;--ink:#f4efe6;--muted:#a59f97;--line:rgba(244,239,230,.14);--card:#211f25}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 var(--body)}
+main{max-width:760px;margin:0 auto;padding:48px 20px 80px}
+a{color:var(--red)}
+small.k{font:500 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+h1{font:600 clamp(34px,6vw,52px)/1.05 var(--display);margin:6px 0 14px}
+h2{font:600 26px/1.2 var(--display);margin:46px 0 8px}
+p.lede{font-size:19px;color:var(--muted)}
+code{font:13px var(--mono);background:var(--card);border:1px solid var(--line);padding:1px 5px;border-radius:4px}
+figure{margin:20px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+svg text{font-family:var(--body);fill:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:24px 0}
+.stats div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stats b{display:block;font:600 24px var(--display)}
+.stats span{font-size:13px;color:var(--muted)}
+.back{display:inline-block;margin-bottom:24px;font-size:14px}
+ul{padding-left:20px}
+</style>
+</head>
+<body><main>
+<a class="back" href="./">← Back to the window</a>
+<small class="k">Write-up</small>
+<h1>How Window Seat works</h1>
+<p class="lede">A real train is crossing the Alps right now. Window Seat works out where it is, builds the mountains around it from open data, and puts you in a seat by the window. Everything runs in your browser on a static page.</p>
+
+<div class="stats">
+  <div><b>3</b><span>routes: Glacier, Bernina, Gotthard</span></div>
+  <div><b>20 m</b><span>between track points</span></div>
+  <div><b>1.6 m</b><span>aerial photo pixels near the train</span></div>
+  <div><b>0</b><span>servers. It's all static files</span></div>
+</div>
+
+<h2>1. Where is the train?</h2>
+<p>Swiss railways publish their timetable and live delays through <a href="https://transport.opendata.ch">transport.opendata.ch</a>. Each connection lists every stop with its arrival and departure, including delays. Between two stops the app doesn't just slide at constant speed: when the route is built it gets a <b>speed profile</b>, slower on tight curves (speed ≈ √(0.9 · radius)), slower on steep rack sections, and capped at the line speed. Time between stations is then spread along that profile, so the train brakes into curves and creeps up the Oberalp like the real one.</p>
+<figure>
+<svg viewBox="0 0 700 200" role="img" aria-label="Speed between two stations dips on curves and steep grades">
+  <line x1="40" y1="160" x2="680" y2="160" stroke="currentColor" opacity=".25"/>
+  <path d="M40 160 C80 160 90 60 140 60 L230 60 C260 60 265 120 300 120 L360 120 C390 120 395 60 430 60 L520 60 C540 60 545 95 570 95 L610 95 C640 95 650 160 680 160" fill="none" stroke="#d4202c" stroke-width="3"/>
+  <circle cx="40" cy="160" r="6" fill="#d4202c"/><circle cx="680" cy="160" r="6" fill="#d4202c"/>
+  <text x="40" y="186" font-size="13">Station A</text><text x="612" y="186" font-size="13">Station B</text>
+  <text x="270" y="142" font-size="12" opacity=".7">tight curve</text><text x="540" y="118" font-size="12" opacity=".7">7% grade</text>
+  <text x="140" y="48" font-size="12" opacity=".7">line speed</text>
+</svg>
+<figcaption>Timetable gives the endpoints; the speed profile decides everything in between.</figcaption>
+</figure>
+
+<h2>2. Where is the track?</h2>
+<p>A build script asks OpenStreetMap's Overpass API for every railway in a corridor around the line, metre gauge for the Rhaetian and MGB lines and standard gauge for the Gotthard. It turns the ways into a graph and runs Dijkstra from one terminus to the other, then resamples the path every 20 m. Tunnels and bridges are tagged in OSM; heights inside tunnels are interpolated so the train doesn't follow the mountain over the top. The build also extrudes every building near the line with a gabled roof.</p>
+<figure>
+<svg viewBox="0 0 700 170" role="img" aria-label="Build pipeline">
+  <g font-size="13">
+    <rect x="10" y="50" width="130" height="60" rx="10" fill="none" stroke="currentColor" opacity=".35"/><text x="75" y="85" text-anchor="middle">OSM Overpass</text>
+    <rect x="190" y="50" width="130" height="60" rx="10" fill="none" stroke="currentColor" opacity=".35"/><text x="255" y="78" text-anchor="middle">Track graph</text><text x="255" y="96" text-anchor="middle" font-size="11" opacity=".7">Dijkstra</text>
+    <rect x="370" y="50" width="130" height="60" rx="10" fill="none" stroke="currentColor" opacity=".35"/><text x="435" y="78" text-anchor="middle">Resample 20 m</text><text x="435" y="96" text-anchor="middle" font-size="11" opacity=".7">+ heights, tunnels</text>
+    <rect x="550" y="50" width="140" height="60" rx="10" fill="#d4202c" opacity=".12"/><text x="620" y="78" text-anchor="middle">route.json</text><text x="620" y="96" text-anchor="middle" font-size="11" opacity=".7">+ buildings/*.json</text>
+  </g>
+  <g stroke="#d4202c" stroke-width="2"><line x1="140" y1="80" x2="190" y2="80"/><line x1="320" y1="80" x2="370" y2="80"/><line x1="500" y1="80" x2="550" y2="80"/></g>
+  <text x="350" y="150" text-anchor="middle" font-size="12" opacity=".7">Runs once in GitHub Actions; the result is cached and served as static files.</text>
+</svg>
+</figure>
+
+<h2>3. Building the mountains</h2>
+<p>Terrain comes from open elevation tiles (Terrarium format: height encoded in RGB). The world around the train is built in four rings: 1.6 m swisstopo aerial photos on a 128×128 mesh near the train, then coarser rings out to the horizon. Each coarse ring cuts a hole where the finer ring has loaded, so blurry far tiles never poke through a detailed valley.</p>
+<figure>
+<svg viewBox="0 0 700 260" role="img" aria-label="Four rings of terrain detail around the train">
+  <g fill="none" stroke="currentColor">
+    <circle cx="350" cy="130" r="120" opacity=".18"/><circle cx="350" cy="130" r="84" opacity=".28"/><circle cx="350" cy="130" r="48" opacity=".4"/><circle cx="350" cy="130" r="18" stroke="#d4202c" stroke-width="2"/>
+  </g>
+  <circle cx="350" cy="130" r="4" fill="#d4202c"/>
+  <g font-size="12"><text x="376" y="114">z14 · 1.6 m photo · trees, grass</text><text x="410" y="80">z12 · ~33 km</text><text x="440" y="46">z10 · ~80 km</text><text x="470" y="16">z8 · the horizon</text></g>
+</svg>
+</figure>
+<p>The terrain shader adds what a photo can't: micro-relief from screen-space derivatives, snow that settles on flat ground above a snowline that follows the season and the live weather, wet ground in rain, and lakes that mirror the sky.</p>
+
+<h2>4. Making it look like the Alps</h2>
+<ul>
+  <li><b>Forests from the photo.</b> Every dark-green forest pixel near the train becomes an instanced 3D tree: spruce and larch up high (larches turn gold in autumn), round-crowned broadleaf trees in the valleys.</li>
+  <li><b>Meadows.</b> Grass tufts and wildflowers are scattered only where the photo is meadow-green and the slope is gentle, and they sway with the live wind direction.</li>
+  <li><b>Things in the air.</b> Leaves in autumn, blossom in spring, seeds in summer, all blown by the real wind. Rain, snow and lightning follow Open-Meteo's current weather at the train's position.</li>
+  <li><b>Light.</b> Sun position from the real time and place, ACES tone mapping, low cloud around the peaks, sun glare, and lit windows and platform lamps after dark.</li>
+  <li><b>Other trains.</b> Trains coming the other way are real connections from the same API, placed on the opposite track.</li>
+</ul>
+
+<h2>5. Running on a phone</h2>
+<p>Weak devices start in a lighter mode (fewer triangles, smaller imagery, less grass). While you ride, the app watches the frame rate and lowers the resolution and grass density if it drops below 26 fps.</p>
+
+<h2>What's not here</h2>
+<p>"Who else is riding this train" would need a small server to count visitors, and this project is deliberately static. The Glacier Express itself also takes an autumn break, so in those weeks you ride the regional trains on the same tracks.</p>
+
+<h2>Data</h2>
+<p>Aerial imagery © swisstopo · Terrain: Mapzen / AWS Terrain Tiles · Railways and buildings © OpenStreetMap contributors (ODbL) · Timetable: transport.opendata.ch · Weather: Open-Meteo. Built with three.js and Leaflet by <a href="https://github.com/arikhanacademic-cpu">Ari Khan</a>.</p>
+</main></body></html>

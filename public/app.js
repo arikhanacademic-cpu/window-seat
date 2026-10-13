@@ -8,6 +8,8 @@
 (async function () {
   const $ = (s) => document.querySelector(s);
   const params = new URLSearchParams(location.search);
+  const FILM = params.has("film"); // ?film=1 → clean full-screen view for recording videos
+  if (FILM) { document.body.classList.add("film"); if (params.get("film") !== "nobars") document.body.classList.add("bars"); }
   const PREVIEW = Math.max(0, +params.get("preview") || 0);   // ?preview=60 → 60× speed demo, not live
   const API = "https://transport.opendata.ch/v1/connections";
   const TERRAIN = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
@@ -18,16 +20,21 @@
   const fmtDate = (t) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(t);
   const mins = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-  function fail(html) { const e = $("#err"); e.hidden = false; e.firstElementChild.innerHTML = html; }
+  function fail(html) { $("#loader")?.remove(); const e = $("#err"); e.hidden = false; e.firstElementChild.innerHTML = html; }
 
   /* ---------- clock (real, or sped up in preview) ---------- */
   const t0Real = Date.now(); let previewStart = t0Real;
   const now = () => (PREVIEW ? previewStart + (Date.now() - t0Real) * PREVIEW : Date.now());
 
   /* ---------- route ---------- */
-  let raw;
-  try { raw = await (await fetch("data/route.json")).json(); }
-  catch { fail(location.protocol === "file:" ? "<h2>Open this through a web server</h2><p>Run <code>npx serve public</code> in the project folder, then open the address it prints.</p>" : "<h2>No route yet</h2><p>Run <code>node scripts/build-route.mjs</code> (or the GitHub Action) to build <code>public/data/route.json</code>.</p>"); return; }
+  // Which line: ?route=bernina, or the last one you rode
+  let routes = [], raw, RID;
+  try {
+    routes = await (await fetch("data/routes.json")).json();
+    RID = [params.get("route"), store.get("route", null)].find((r) => routes.some((x) => x.id === r)) || routes[0].id;
+    raw = await (await fetch(`data/${RID}/route.json`)).json(); store.set("route", RID);
+  }
+  catch { fail(location.protocol === "file:" ? "<h2>Open this through a web server</h2><p>Run <code>npx serve public</code> in the project folder, then open the address it prints.</p>" : "<h2>No route yet</h2><p>Run <code>node scripts/build-route.mjs</code> (or the GitHub Action) to build <code>public/data/</code>.</p>"); return; }
   const N = raw.pts.length / 4, STEP = raw.step / 1000, L = raw.length;
   let minLa = 90, maxLa = -90, minLo = 180, maxLo = -180;
   for (let i = 0; i < N; i++) { const la = raw.pts[i * 4], lo = raw.pts[i * 4 + 1]; minLa = Math.min(minLa, la); maxLa = Math.max(maxLa, la); minLo = Math.min(minLo, lo); maxLo = Math.max(maxLo, lo); }
@@ -49,7 +56,7 @@
       stations: ord(raw.stations).map(([n, km]) => [n, +m(km).toFixed(2)]).filter((s, i, a) => i === 0 || s[0] !== a[i - 1][0] || Math.abs(s[1] - a[i - 1][1]) > 0.5),
       tunnels: ord(raw.tunnels).map(([a, b, n]) => (rev ? [L - b, L - a, n] : [a, b, n])),
       bridges: ord(raw.bridges).map(([a, b, n]) => (rev ? [L - b, L - a, n] : [a, b, n])),
-      stamps: ord(raw.stamps).map(([id, t, d, km]) => [id, t, d, m(km)])
+      stamps: ord(raw.stamps).map(([id, t, d, km, story]) => [id, t, d, m(km), story || ""])
     };
     r.at = (km) => {
       const f = Math.max(0, Math.min(N - 1.0001, km / STEP)); const i = Math.floor(f), u = f - i;
@@ -64,6 +71,21 @@
       return best < 0 ? null : best * STEP;
     };
     r.inTunnel = (km) => r.tunnels.find(([a, b]) => km >= a && km <= b);
+    // How fast a train can go at each point: limited by curve radius, by rack sections on steep
+    // grades, and by the line's top speed. Cumulative travel "cost" lets the train slow for curves
+    // and climbs between stations instead of moving at an even pace.
+    const VMAX = raw.gauge === "standard" ? 33 : 21, v = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const a = Math.max(0, i - 3), b = Math.min(N - 1, i + 3); const h1 = Math.atan2(Z[i] - Z[a], X[i] - X[a]), h2 = Math.atan2(Z[b] - Z[i], X[b] - X[i]);
+      let dA = Math.abs(h2 - h1); if (dA > Math.PI) dA = 2 * Math.PI - dA; const R = dA > 1e-4 ? ((b - a) * raw.step / 2) / dA : 1e6;
+      const grade = Math.abs(Y[b] - Y[a]) / ((b - a) * raw.step || 1);
+      v[i] = Math.max(5, Math.min(VMAX, Math.sqrt(0.9 * R), grade > 0.075 ? 8.5 : VMAX));
+    }
+    const vs = new Float64Array(N); for (let i = 0; i < N; i++) { let m = 1e9; for (let k = -8; k <= 8; k++) { const j = i + k; if (j >= 0 && j < N) m = Math.min(m, v[j]); } vs[i] = m; }
+    const cost = new Float64Array(N); for (let i = 1; i < N; i++) cost[i] = cost[i - 1] + raw.step / ((vs[i] + vs[i - 1]) / 2);
+    r.costAt = (km) => { const f = Math.max(0, Math.min(N - 1.0001, km / STEP)); const i = Math.floor(f); return cost[i] + (cost[i + 1] - cost[i]) * (f - i); };
+    r.kmAtCost = (c) => { let lo = 0, hi = N - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cost[m] < c) lo = m; else hi = m; } const span = cost[hi] - cost[lo] || 1; return (lo + Math.max(0, Math.min(1, (c - cost[lo]) / span))) * STEP; };
+    r.vmax = (km) => vs[Math.max(0, Math.min(N - 1, Math.round(km / STEP)))] * 3.6;
     return r;
   }
   const ROUTES = { fwd: makeRoute(false), rev: makeRoute(true) };
@@ -71,9 +93,9 @@
   /* ---------- three.js scene ---------- */
   const canvas = $("#view");
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  let PR = Math.min(devicePixelRatio, params.has("lite") ? 1 : 2); renderer.setPixelRatio(PR);
   renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.08;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = FILM ? 1.12 : 1.08;
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(58, 1, 1, 320000);
   const hemi = new THREE.HemisphereLight(0xdfe8f5, 0x4a4234, 0.7); scene.add(hemi);
@@ -158,7 +180,8 @@
   const SEASON_SNOW = [1000, 1000, 1200, 1700, 2300, 2800, 3100, 3200, 2900, 2500, 1800, 1200];
 
   /* ---------- terrain tiles ---------- */
-  const LITE = params.has("lite"); // for slow devices and automated tests
+  const WEAK = !params.has("hq") && ((navigator.deviceMemory && navigator.deviceMemory <= 3) || ((navigator.hardwareConcurrency || 8) <= 4 && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)));
+  const LITE = params.has("lite") || WEAK; // slow devices and automated tests: fewer triangles, smaller imagery, sparser grass
   const LEVELS = [
     { z: 14, r: 1, segs: 128, drop: 0, img: LITE ? 15 : 16, trees: true }, // ~5 km around the train: 1.6 m imagery, 3D trees
     { z: 12, r: 2, segs: 96, drop: 14, img: 13 },                           // ~33 km
@@ -166,7 +189,7 @@
     { z: 8, r: 1, segs: 48, drop: 140, img: 9 }                             // the far horizon
   ];
   if (LITE) LEVELS.forEach((l) => (l.segs = Math.max(16, l.segs / 4)));
-  const tiles = new Map(); let inflight = 0; const queue = [];
+  const tiles = new Map(); let inflight = 0, failedTiles = 0; const queue = [];
   // Coarser rings cut a hole where the finer ring is fully loaded, so a blurry far tile
   // never pokes up through a detailed valley floor.
   LEVELS.forEach((lv) => (lv.hole = { value: new THREE.Vector4(0, 0, 0, 0) }));
@@ -178,12 +201,12 @@
     m.extensions = { derivatives: true };
     if (!opts.map) m.defines = { USE_PROC: "" };
     m.onBeforeCompile = (sh) => {
-      sh.uniforms.uHole = lv.hole; sh.uniforms.uDrop = { value: lv.drop }; sh.uniforms.uSnowLine = WXU.uSnowLine; sh.uniforms.uSnowAmt = WXU.uSnowAmt; sh.uniforms.uWet = WXU.uWet; sh.uniforms.uBump = { value: lv.z >= 14 ? 1 : 0.5 };
+      sh.uniforms.uHole = lv.hole; sh.uniforms.uDrop = { value: lv.drop }; sh.uniforms.uSkyCol = skyU.uHorizon; sh.uniforms.uSnowLine = WXU.uSnowLine; sh.uniforms.uSnowAmt = WXU.uSnowAmt; sh.uniforms.uWet = WXU.uWet; sh.uniforms.uBump = { value: lv.z >= 14 ? 1 : 0.5 };
       sh.vertexShader = sh.vertexShader
         .replace("#include <common>", "#include <common>\nvarying vec2 vWXZ; varying float vWY; varying vec3 vWN; uniform float uDrop;")
         .replace("#include <begin_vertex>", "#include <begin_vertex>\nvec4 wpT = modelMatrix * vec4(transformed, 1.0); vWXZ = wpT.xz; vWY = wpT.y + uDrop; vWN = normalize(mat3(modelMatrix) * objectNormal);");
       sh.fragmentShader = sh.fragmentShader
-        .replace("#include <common>", "#include <common>\nvarying vec2 vWXZ; varying float vWY; varying vec3 vWN; uniform vec4 uHole; uniform float uSnowLine, uSnowAmt, uWet, uBump;\n" + NOISE)
+        .replace("#include <common>", "#include <common>\nvarying vec2 vWXZ; varying float vWY; varying vec3 vWN; uniform vec4 uHole; uniform float uSnowLine, uSnowAmt, uWet, uBump; uniform vec3 uSkyCol;\n" + NOISE)
         .replace("void main() {", "void main() {\n  if (vWXZ.x > uHole.x && vWXZ.x < uHole.z && vWXZ.y > uHole.y && vWXZ.y < uHole.w) discard;")
         .replace("#include <map_fragment>", `#include <map_fragment>
           #ifdef USE_MAP
@@ -221,7 +244,17 @@
             diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.86, .89, .94), cover);
             roughnessFactor = mix(roughnessFactor, .55, cover);
             diffuseColor.rgb *= 1. - .22 * uWet * (1. - cover); roughnessFactor = mix(roughnessFactor, .45, uWet * (1. - cover));
-          }`);
+          }
+          #ifdef USE_MAP
+          // lakes and rivers in the aerial photo: calm water that mirrors the sky and catches the sun
+          {
+            vec3 cc = diffuseColor.rgb; float lum2 = dot(cc, vec3(.2126, .7152, .0722));
+            float isWater = step(cc.r * 1.15, cc.b) * step(cc.g * .82, cc.b) * step(lum2, .12) * smoothstep(.93, .985, dot(normal, normalize((viewMatrix * vec4(0., 1., 0., 0.)).xyz)));
+            float fres = pow(1. - max(dot(normal, normalize(vViewPosition)), 0.), 4.);
+            diffuseColor.rgb = mix(diffuseColor.rgb, mix(cc * 1.2, uSkyCol, .35 + .5 * fres), isWater);
+            roughnessFactor = mix(roughnessFactor, .12, isWater);
+          }
+          #endif`);
     };
     return m;
   }
@@ -247,7 +280,7 @@
   }
   async function buildTile(t) {
     const { lv, x, y } = t; let img;
-    try { img = await loadImage(TERRAIN(lv.z, x, y)); } catch { tiles.delete(t.key); return; }
+    try { img = await loadImage(TERRAIN(lv.z, x, y)); } catch { tiles.delete(t.key); failedTiles++; return; }
     if (!tiles.has(t.key)) return;
     const cv = document.createElement("canvas"); cv.width = cv.height = 256; const g = cv.getContext("2d"); g.drawImage(img, 0, 0); const d = g.getImageData(0, 0, 256, 256).data;
     const H = (px, py) => { px = Math.max(0, Math.min(255, px)); py = Math.max(0, Math.min(255, py)); const i = (py * 256 + px) * 4; return d[i] * 256 + d[i + 1] + d[i + 2] / 256 - 32768; };
@@ -279,6 +312,7 @@
     const cv = document.createElement("canvas"); cv.width = cv.height = size; const g = cv.getContext("2d");
     let ok = 0;
     await Promise.all([...Array(k * k).keys()].map(async (q) => { const dx = q % k, dy = Math.floor(q / k); try { const im = await loadImage(IMAGERY(lv.img, x * k + dx, y * k + dy)); g.drawImage(im, dx * 256, dy * 256); ok++; } catch {} }));
+    t.imgDone = true;
     if (ok < k * k || !t.mesh || !tiles.has(t.key)) return; // outside Switzerland or offline: keep the painted terrain
     const tex = new THREE.CanvasTexture(cv); tex.anisotropy = renderer.capabilities.getMaxAnisotropy(); tex.encoding = THREE.sRGBEncoding;
     t.mesh.material.dispose(); t.mesh.material = terrainMaterial(lv, { map: tex });
@@ -293,12 +327,16 @@
     for (const [g0, y, c] of parts) { const g = g0.toNonIndexed(); g.translate(0, y, 0); pos.push(...g.attributes.position.array); nor.push(...g.attributes.normal.array); for (let i = 0; i < g.attributes.position.count; i++) col.push(...c); }
     const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); return g;
   })();
-  const TREE_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const TREE_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+  // broadleaf trees (birch, ash, beech) in the lower valleys, round crowns that turn yellow and orange in autumn
+  const BROAD_GEO = (() => { const parts = [[new THREE.CylinderGeometry(0.25, 0.4, 5, 5), 2.5, [0.32, 0.27, 0.22]], [new THREE.IcosahedronGeometry(3.2, 1), 7.2, [1, 1, 1]], [new THREE.IcosahedronGeometry(2.4, 1), 9.6, [1.05, 1.05, 1.05]], [new THREE.IcosahedronGeometry(2.2, 0), 6.6, [0.9, 0.9, 0.9]]];
+    const pos = [], nor = [], col = []; for (const [g0, yy, c] of parts) { const g = g0.index ? g0.toNonIndexed() : g0.clone(); g.translate(0, yy, 0); if (g0.type !== "CylinderGeometry") g.translate(g0.parameters.radius * 0.25, 0, 0); pos.push(...g.attributes.position.array); nor.push(...g.attributes.normal.array); for (let i = 0; i < g.attributes.position.count; i++) col.push(...c); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); return g; })();
   const routeGrid = new Map(); { const R = ROUTES.fwd; for (let i = 0; i < N; i++) { const k = Math.floor(R.X[i] / 40) + "," + Math.floor(R.Z[i] / 40); (routeGrid.get(k) || routeGrid.set(k, []).get(k)).push(i); } }
   function nearTrack(x, z, d) { const cx = Math.floor(x / 40), cz = Math.floor(z / 40); const R = ROUTES.fwd; for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const i of routeGrid.get((cx + a) + "," + (cz + b)) || []) if (Math.hypot(R.X[i] - x, R.Z[i] - z) < d) return true; return false; }
   const autumn = [9, 10].includes(new Date().getMonth());
   function plantTrees(t, g, size) {
-    const { lv, x, y } = t; const S = lv.segs, n = S + 1; const px = g.getImageData(0, 0, size, size).data;
+    const { lv, x, y } = t; const S = lv.segs, n = S + 1; const px = g.getImageData(0, 0, size, size).data; t.px = px; t.pxSize = size;
     const lat = y2lat(y + 0.5, lv.z); const tileM = (40075016 * Math.cos((lat * Math.PI) / 180)) / 2 ** lv.z; const step = (LITE ? 34 : 13) / tileM;
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), ps = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
     const out = []; let seed = (x * 73856093) ^ (y * 19349663); const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
@@ -313,6 +351,16 @@
       out.push([wx, h, wz]); if (out.length >= 9000) break;
     }
     if (!out.length || !tiles.has(t.key)) return;
+    const broad = [], coni = []; for (const o of out) (o[1] < 1350 && rnd() < 0.45 ? broad : coni).push(o);
+    if (broad.length) {
+      const bm = new THREE.InstancedMesh(BROAD_GEO, TREE_MAT, broad.length); const month = new Date().getMonth();
+      broad.forEach(([wx, h, wz], k) => { const s = 0.7 + rnd() * 0.6; q.setFromAxisAngle(up, rnd() * 6.28); m4.compose(ps.set(wx, h - 0.4, wz), q, sc.set(s, s * (0.9 + rnd() * 0.3), s)); bm.setMatrixAt(k, m4);
+        if (month === 9 || month === 10) { const r = rnd(); if (r < 0.3) col.setHSL(0.2 + rnd() * 0.05, 0.35, 0.26); else col.setHSL(r < 0.75 ? 0.11 + rnd() * 0.03 : r < 0.93 ? 0.075 + rnd() * 0.02 : 0.035 + rnd() * 0.015, 0.45 + rnd() * 0.2, 0.3 + rnd() * 0.08); }
+        else if (month >= 11 || month <= 2) col.setHSL(0.08, 0.15, 0.3); else col.setHSL(0.24 + rnd() * 0.05, 0.42 + rnd() * 0.15, 0.24 + rnd() * 0.07);
+        bm.setColorAt(k, col.convertSRGBToLinear()); });
+      bm.instanceMatrix.needsUpdate = true; if (bm.instanceColor) bm.instanceColor.needsUpdate = true; scene.add(bm); t.trees2 = bm;
+    }
+    out.length = 0; out.push(...coni); if (!out.length) return;
     const im = new THREE.InstancedMesh(TREE_GEO, TREE_MAT, out.length);
     out.forEach(([wx, h, wz], k) => {
       const s = 0.65 + rnd() * 0.7; const w = s * (0.75 + rnd() * 0.4); q.setFromAxisAngle(up, rnd() * 6.28); m4.compose(ps.set(wx, h - 0.6, wz), q, sc.set(w, s * (0.85 + rnd() * 0.4), w)); im.setMatrixAt(k, m4);
@@ -337,7 +385,16 @@
       const inset = 25; LEVELS[i].hole.value.set(Math.min(x0, x1) + inset, Math.min(z0, z1) + inset, Math.max(x0, x1) - inset, Math.max(z0, z1) - inset);
     }
     const nowT = performance.now();
-    for (const [k, t] of tiles) if (nowT - t.seen > 20000) { if (t.trees) { scene.remove(t.trees); t.trees.dispose?.(); } if (t.mesh) { scene.remove(t.mesh); t.mesh.geometry.dispose(); if (t.mesh.material.map) t.mesh.material.map.dispose(); t.mesh.material.dispose(); } tiles.delete(k); }
+    for (const [k, t] of tiles) if (nowT - t.seen > 20000) { if (t.trees) { scene.remove(t.trees); t.trees.dispose?.(); } if (t.trees2) { scene.remove(t.trees2); t.trees2.dispose?.(); } if (t.mesh) { scene.remove(t.mesh); t.mesh.geometry.dispose(); if (t.mesh.material.map) t.mesh.material.map.dispose(); t.mesh.material.dispose(); } tiles.delete(k); }
+  }
+  function groundExact(x, z) { // bilinear height on the detailed ring, plus whether that spot is meadow in the photo
+    const [lat, lon] = toLL(x, z); const lv = LEVELS[0]; const fx = lon2x(lon, lv.z), fy = lat2y(lat, lv.z); const t = tiles.get(`${lv.z}/${Math.floor(fx)}/${Math.floor(fy)}`); if (!t || !t.h) return null;
+    const S = lv.segs, n = S + 1, u = (fx % 1) * S, v = (fy % 1) * S, i = Math.min(S - 1, Math.floor(u)), j = Math.min(S - 1, Math.floor(v)), a = u - i, b = v - j, H = t.h;
+    const h = H[j * n + i] * (1 - a) * (1 - b) + H[j * n + i + 1] * a * (1 - b) + H[(j + 1) * n + i] * (1 - a) * b + H[(j + 1) * n + i + 1] * a * b;
+    const slope = Math.hypot(H[j * n + i + 1] - H[j * n + i], H[(j + 1) * n + i] - H[j * n + i]) / ((40075016 * Math.cos((lat * Math.PI) / 180)) / 2 ** lv.z / S);
+    let meadow = slope < 0.9 && h < 2500;
+    if (t.px) { const k = (Math.floor((fy % 1) * t.pxSize) * t.pxSize + Math.floor((fx % 1) * t.pxSize)) * 4; const r = t.px[k], g = t.px[k + 1], bb = t.px[k + 2], l = (r + g + bb) / 3; meadow = meadow && g >= r - 2 && g > bb + 4 && l > 55 && l < 190; }
+    return { h, meadow };
   }
   function groundAt(x, z) {
     const [lat, lon] = toLL(x, z);
@@ -390,6 +447,95 @@
   }
 
 
+
+  /* ---------- trains: your own train around you, and the other trains on the line ----------
+     A locomotive and six panorama coaches in Swiss railway red. You sit in the fourth vehicle,
+     so on curves you can see the front and the back of your own train. */
+  const NIGHTU = { value: 0 }; // 0 by day … 1 at night, drives lit windows and lamps
+  function mergeParts(parts) {
+    const pos = [], nor = [], col = [];
+    for (const [geo, x, y, z, c] of parts) { const g = geo.toNonIndexed(); g.translate(x, y, z); pos.push(...g.attributes.position.array); nor.push(...g.attributes.normal.array); for (let i = 0; i < g.attributes.position.count; i++) col.push(c[0], c[1], c[2]); }
+    const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3)); g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3)); return g;
+  }
+  const lin = (h) => { const c = C(h); return [c.r, c.g, c.b]; };
+  const RED = lin("#c41e2a"), RED2 = lin("#9c1520"), WHITE = lin("#f2f2f2"), DARK = lin("#24262b"), GREY = lin("#6b6e75"), BOX = THREE.BoxGeometry;
+  const CAR_LEN = 17.6, LOCO_LEN = 14.5, GAP = 0.6;
+  const coachBody = mergeParts([
+    [new BOX(2.62, 1.25, CAR_LEN), 0, 1.55, 0, RED], [new BOX(2.64, 0.12, CAR_LEN - 0.2), 0, 2.2, 0, WHITE], [new BOX(2.5, 0.25, CAR_LEN - 0.6), 0, 0.95, 0, RED2],
+    [new BOX(1.2, 0.8, 2.4), 0, 0.45, CAR_LEN / 2 - 3, DARK], [new BOX(1.2, 0.8, 2.4), 0, 0.45, -CAR_LEN / 2 + 3, DARK], [new BOX(1.6, 2.6, 0.5), 0, 2.1, CAR_LEN / 2 + 0.1, GREY], [new BOX(1.6, 2.6, 0.5), 0, 2.1, -CAR_LEN / 2 - 0.1, GREY]]);
+  const coachGlass = mergeParts([[new BOX(2.5, 1.05, CAR_LEN - 0.8), 0, 2.78, 0, DARK], [new BOX(1.9, 0.18, CAR_LEN - 0.8), 0, 3.38, 0, DARK]]); // panorama windows curving into the roof
+  const locoBody = mergeParts([[new BOX(2.62, 2.5, LOCO_LEN), 0, 2.2, 0, RED], [new BOX(2.64, 0.12, LOCO_LEN - 0.2), 0, 1.7, 0, WHITE], [new BOX(1.2, 0.8, 2.6), 0, 0.45, 4.5, DARK], [new BOX(1.2, 0.8, 2.6), 0, 0.45, -4.5, DARK], [new BOX(1.4, 0.3, 4), 0, 3.6, 0, GREY]]);
+  const locoGlass = mergeParts([[new BOX(2.3, 0.75, 0.1), 0, 2.85, LOCO_LEN / 2 + 0.02, DARK], [new BOX(2.3, 0.75, 0.1), 0, 2.85, -LOCO_LEN / 2 - 0.02, DARK], [new BOX(2.66, 0.55, 2), 0, 2.85, LOCO_LEN / 2 - 1.4, DARK], [new BOX(2.66, 0.55, 2), 0, 2.85, -LOCO_LEN / 2 + 1.4, DARK]]);
+  const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.25 });
+  const glassMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.08, metalness: 0.6, emissive: new THREE.Color("#ffcf8a"), emissiveIntensity: 0 });
+  glassMat.onBeforeCompile = (sh) => { sh.uniforms.uNight = NIGHTU; sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform float uNight;").replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\ntotalEmissiveRadiance = vec3(1., .81, .54) * .55 * uNight;"); };
+  function makeTrain() {
+    const g = new THREE.Group(); const cars = [];
+    for (let k = 0; k < 7; k++) { const loco = k === 0; const c = new THREE.Group(); c.add(new THREE.Mesh(loco ? locoBody : coachBody, paintMat), new THREE.Mesh(loco ? locoGlass : coachGlass, glassMat)); c.userData.len = loco ? LOCO_LEN : CAR_LEN; g.add(c); cars.push(c); }
+    g.userData.cars = cars; scene.add(g); return g;
+  }
+  // place a train with its front at headKm (in route R's direction), shifted sideways by `side` metres
+  function placeTrain(train, R, headKm, side, hideIdx) {
+    let off = 0;
+    train.userData.cars.forEach((c, k) => {
+      const len = c.userData.len; const km = headKm - (off + len / 2) / 1000; off += len + GAP;
+      c.visible = k !== hideIdx && km > 0.01 && km < L - 0.01 && !R.inTunnel(km);
+      if (!c.visible) return; const p = R.at(km); const nx = p.hz, nz = -p.hx; // left of travel
+      c.position.set(p.x + nx * side, p.y + 0.2, p.z + nz * side); c.rotation.set(0, Math.atan2(p.hx, p.hz), 0);
+    });
+  }
+  const myTrain = makeTrain(); const MY_CAR = 3;
+  const myCarOffsetKm = () => (LOCO_LEN + GAP + (MY_CAR - 1) * (CAR_LEN + GAP) + CAR_LEN / 2) / 1000; // from the front of the train to my seat
+  const others = [makeTrain(), makeTrain(), makeTrain()]; others.forEach((t) => (t.visible = false));
+  let otherJourneys = [], lastPass = 0;
+  async function refreshOthers() {
+    if (!ride || ride.source !== "live") { otherJourneys = []; return; }
+    const t = now(); const out = [];
+    for (const d of ["fwd", "rev"]) { try { const cs = await fetchConnections(d, new Date(t - 9 * 3600000), 16); for (const c of cs) { const j = journeyFromConnection(d, c); if (j && j.arr > t && !(d === ride.dir && Math.abs(j.dep - ride.dep) < 60000)) out.push(j); } } catch {} }
+    otherJourneys = out;
+  }
+  function updateOthers(t, myKm) {
+    const R = ROUTES[dir]; let slot = 0;
+    for (const j of otherJourneys) {
+      if (slot >= others.length) break; if (t < j.dep || t > j.arr) continue;
+      const k = kmAt(j, t); const kmHere = j.dir === dir ? k : L - k; if (Math.abs(kmHere - myKm) > 3) continue;
+      const tr = others[slot++]; tr.visible = true; const sameWay = j.dir === dir;
+      // trains pass each other on passing loops: draw the other train on the next track over
+      if (sameWay) placeTrain(tr, R, kmHere + 0.12, 4.3, -1);
+      else placeTrain(tr, ROUTES[j.dir], k + 0.12, -4.3, -1);
+      if (!sameWay && Math.abs(kmHere - myKm) < 0.15 && performance.now() - lastPass > 8000) { lastPass = performance.now(); window.WSAudio?.whoosh?.(); }
+    }
+    for (; slot < others.length; slot++) others[slot].visible = false;
+  }
+
+  /* ---------- stations: platforms, name signs, shelters and lamps at every stop of your train ---------- */
+  const stationGroup = new THREE.Group(); scene.add(stationGroup); let builtStationsFor = null;
+  const lampMat = new THREE.SpriteMaterial({ map: (() => { const c = document.createElement("canvas"); c.width = c.height = 64; const g = c.getContext("2d"); const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, "rgba(255,230,180,1)"); gr.addColorStop(0.3, "rgba(255,200,120,.5)"); gr.addColorStop(1, "rgba(255,180,80,0)"); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+  function signTexture(name) {
+    const c = document.createElement("canvas"); c.width = 512; c.height = 96; const g = c.getContext("2d");
+    g.fillStyle = "#16306b"; g.fillRect(0, 0, 512, 96); g.strokeStyle = "#fff"; g.lineWidth = 4; g.strokeRect(6, 6, 500, 84);
+    g.fillStyle = "#fff"; g.font = "600 46px 'Inter Tight', Helvetica, Arial, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(name, 256, 50, 480);
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; t.anisotropy = 4; return t;
+  }
+  const platMat = new THREE.MeshStandardMaterial({ color: C("#a9a69e"), roughness: 0.9 }), edgeMat = new THREE.MeshStandardMaterial({ color: C("#e8d34a"), roughness: 0.6 }), postMat = new THREE.MeshStandardMaterial({ color: C("#4b4e55"), roughness: 0.5, metalness: 0.5 }), roofMat2 = new THREE.MeshStandardMaterial({ color: C("#5a3b2a"), roughness: 0.8 });
+  function buildStations(j) {
+    if (builtStationsFor === j) return; builtStationsFor = j; stationGroup.clear();
+    const R = ROUTES[j.dir]; const seen = new Set();
+    for (const [, km, name] of j.tl) {
+      if (!name || seen.has(name + Math.round(km))) continue; seen.add(name + Math.round(km)); if (R.inTunnel(km)) continue;
+      const p = R.at(km); const rot = Math.atan2(p.hx, p.hz); const nx = -p.hz, nz = p.hx; // right of travel
+      const st = new THREE.Group(); st.position.set(p.x + nx * 3.4, p.y, p.z + nz * 3.4); st.rotation.y = rot;
+      const plat = new THREE.Mesh(new BOX(3.6, 0.55, 150), platMat); plat.position.set(1.3, 0.3, 0); st.add(plat);
+      const edge = new THREE.Mesh(new BOX(0.25, 0.02, 150), edgeMat); edge.position.set(-0.3, 0.59, 0); st.add(edge);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.6), new THREE.MeshBasicMaterial({ map: signTexture(name), side: THREE.DoubleSide, toneMapped: false }));
+      for (const z of [-30, 30]) { const s2 = sign.clone(); s2.position.set(0.9, 2.7, z); s2.rotation.y = -Math.PI / 2; st.add(s2); for (const dz of [-1.5, 1.5]) { const post = new THREE.Mesh(new BOX(0.08, 2.6, 0.08), postMat); post.position.set(0.95, 1.6, z + dz); st.add(post); } }
+      const shelter = new THREE.Mesh(new BOX(3, 0.25, 22), roofMat2); shelter.position.set(1.6, 3.4, 0); st.add(shelter);
+      for (const z of [-10, 10]) { const col = new THREE.Mesh(new BOX(0.15, 2.8, 0.15), postMat); col.position.set(2.6, 2, z); st.add(col); }
+      for (let z = -60; z <= 60; z += 30) { const lp = new THREE.Mesh(new BOX(0.1, 4.2, 0.1), postMat); lp.position.set(2.9, 2.6, z); st.add(lp); const glow = new THREE.Sprite(lampMat); glow.position.set(2.6, 4.7, z); glow.scale.setScalar(3.2); st.add(glow); }
+      stationGroup.add(st);
+    }
+  }
+
   /* ---------- villages: buildings within ~300 m of the track ---------- */
   // Two repeating wall textures: dark larch planks with small shuttered windows, and white plaster.
   function wallTexture(wood) {
@@ -401,19 +547,23 @@
       g.fillStyle = "#1f2228"; g.fillRect(x, y, 24, 20); g.fillStyle = "rgba(160,190,220,.25)"; g.fillRect(x + 2, y + 2, 8, 6);
       g.fillStyle = wood ? "#8a2a24" : "#4f6b46"; g.fillRect(x - 8, y, 6, 20); g.fillRect(x + 26, y, 6, 20);
     }
-    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+    // a matching glow map: about half the windows light up warm after dark
+    const e = document.createElement("canvas"); e.width = e.height = 128; const ge = e.getContext("2d"); ge.fillStyle = "#000"; ge.fillRect(0, 0, 128, 128);
+    for (const [x, y] of [[22, 28], [78, 28], [22, 84], [78, 84]]) if (Math.random() < 0.6) { const gr = ge.createRadialGradient(x + 12, y + 12, 2, x + 12, y + 10, 16); gr.addColorStop(0, "#ffd79a"); gr.addColorStop(1, "#c8782a"); ge.fillStyle = gr; ge.fillRect(x, y, 24, 20); }
+    c.glow = new THREE.CanvasTexture(e); c.glow.encoding = THREE.sRGBEncoding; c.glow.wrapS = c.glow.wrapT = THREE.RepeatWrapping;
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.glow = c.glow; return t;
   }
   // style: [wall tint, uses wood half of the atlas, roof colour]
   const BSTYLE = [[C("#ffffff"), 1, C("#3f3a36")], [C("#ffffff"), 0, C("#55575d")], [C("#b9ad98"), 0, C("#4b4e55")], [C("#c9c6be"), 0, C("#6c6e72")], [C("#f4f0e6"), 0, C("#3c4a52")]];
   const snowify = (m) => { m.onBeforeCompile = (sh) => { sh.uniforms.uSnowRoof = WXU.uSnowAmt; sh.uniforms.uSnowLine2 = WXU.uSnowLine;
     sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying float vWY2;").replace("#include <begin_vertex>", "#include <begin_vertex>\nvWY2 = (modelMatrix * vec4(transformed, 1.)).y;");
     sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform float uSnowRoof, uSnowLine2; varying float vWY2;").replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n{ vec3 upV = normalize((viewMatrix * vec4(0.,1.,0.,0.)).xyz); float f = smoothstep(.35, .75, dot(normal, upV)) * uSnowRoof * smoothstep(uSnowLine2 - 150., uSnowLine2 + 50., vWY2); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.9,.92,.96), f); }"); }; return m; };
-  const wallMats = [snowify(new THREE.MeshStandardMaterial({ map: wallTexture(false), vertexColors: true, roughness: 0.9, side: THREE.DoubleSide })), snowify(new THREE.MeshStandardMaterial({ map: wallTexture(true), vertexColors: true, roughness: 0.9, side: THREE.DoubleSide }))];
+  const wallMats = [false, true].map((wood) => { const tx = wallTexture(wood); return snowify(new THREE.MeshStandardMaterial({ map: tx, emissiveMap: tx.glow, emissive: new THREE.Color(1, 0.85, 0.6), emissiveIntensity: 0, vertexColors: true, roughness: 0.9, side: THREE.DoubleSide })); });
   const roofMat = snowify(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide }));
   const bChunks = new Map();
   async function loadBuildings(ci) {
     if (bChunks.has(ci)) return; const entry = { meshes: [] }; bChunks.set(ci, entry);
-    let list; try { list = await (await fetch(`data/buildings/${ci}.json`)).json(); } catch { return; }
+    let list; try { list = await (await fetch(`data/${RID}/buildings/${ci}.json`)).json(); } catch { return; }
     const W2 = [{ p: [], u: [], c: [] }, { p: [], u: [], c: [] }], rp = [], rc = []; const col = new THREE.Color();
     for (const b of list) {
       const h = b[0] / 2, st = BSTYLE[b[1]] || BSTYLE[1], pitched = b[2] === 1, base = b[3];
@@ -486,9 +636,9 @@
   }
 
   /* ---------- rain and snow ---------- */
-  const PCOUNT = LITE ? 3000 : 16000; const BOX = new THREE.Vector3(140, 70, 140);
-  const pGeo = new THREE.BufferGeometry(); { const pp = new Float32Array(PCOUNT * 3), rr = new Float32Array(PCOUNT); for (let i = 0; i < PCOUNT; i++) { pp[i * 3] = Math.random() * BOX.x; pp[i * 3 + 1] = Math.random() * BOX.y; pp[i * 3 + 2] = Math.random() * BOX.z; rr[i] = Math.random(); } pGeo.setAttribute("position", new THREE.BufferAttribute(pp, 3)); pGeo.setAttribute("aR", new THREE.BufferAttribute(rr, 1)); }
-  const pU = { uT: { value: 0 }, uCam: { value: new THREE.Vector3() }, uBox: { value: BOX }, uFall: { value: 9 }, uWind: { value: new THREE.Vector2() }, uSnow: { value: 0 }, uAmt: { value: 0 }, uLight: { value: 1 } };
+  const PCOUNT = LITE ? 3000 : 16000; const PBOX = new THREE.Vector3(140, 70, 140);
+  const pGeo = new THREE.BufferGeometry(); { const pp = new Float32Array(PCOUNT * 3), rr = new Float32Array(PCOUNT); for (let i = 0; i < PCOUNT; i++) { pp[i * 3] = Math.random() * PBOX.x; pp[i * 3 + 1] = Math.random() * PBOX.y; pp[i * 3 + 2] = Math.random() * PBOX.z; rr[i] = Math.random(); } pGeo.setAttribute("position", new THREE.BufferAttribute(pp, 3)); pGeo.setAttribute("aR", new THREE.BufferAttribute(rr, 1)); }
+  const pU = { uT: { value: 0 }, uCam: { value: new THREE.Vector3() }, uBox: { value: PBOX }, uFall: { value: 9 }, uWind: { value: new THREE.Vector2() }, uSnow: { value: 0 }, uAmt: { value: 0 }, uLight: { value: 1 } };
   const precip = new THREE.Points(pGeo, new THREE.ShaderMaterial({
     uniforms: pU, transparent: true, depthWrite: false,
     vertexShader: `#include <common>
@@ -545,6 +695,92 @@
     }
   }
   const dir0 = (dirX, d) => (dirX !== 0 ? dirX : (d.x < dropsCv.width / 2 ? -1 : 1)); // front window: drops spread outwards
+
+
+  /* ---------- the near view: grass and wildflowers by the track, leaves on the wind, low clouds ---------- */
+  const MONTH = new Date().getMonth();
+  const windU = { uT: { value: 0 }, uWind: { value: new THREE.Vector2(1, 0) } };
+  const swayShader = (sh) => { sh.uniforms.uT = windU.uT; sh.uniforms.uWind = windU.uWind;
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nuniform float uT; uniform vec2 uWind;").replace("#include <begin_vertex>", "#include <begin_vertex>\nvec4 wpS = instanceMatrix * vec4(0., 0., 0., 1.); float bend = position.y * position.y * .35 * (sin(uT * 2.1 + wpS.x * .37 + wpS.z * .29) * .5 + .7);\ntransformed.xz += uWind * bend * .18;"); };
+  const tuftTex = (() => { const c = document.createElement("canvas"); c.width = 64; c.height = 64; const g = c.getContext("2d");
+    for (let i = 0; i < 26; i++) { const x = 6 + Math.random() * 52, h = 30 + Math.random() * 32, lean = (Math.random() - 0.5) * 14; const gr = g.createLinearGradient(0, 64, 0, 64 - h); gr.addColorStop(0, "#34501c"); gr.addColorStop(1, Math.random() < 0.5 ? "#7f9a3c" : "#a3a84f"); g.strokeStyle = gr; g.lineWidth = 2 + Math.random() * 1.5; g.beginPath(); g.moveTo(x, 64); g.quadraticCurveTo(x + lean * 0.3, 64 - h * 0.6, x + lean, 64 - h); g.stroke(); }
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t; })();
+  const crossGeo = (w, h) => { const a = new THREE.PlaneGeometry(w, h); a.translate(0, h / 2, 0); const b = a.clone(); b.rotateY(Math.PI / 2); const g = new THREE.BufferGeometry(); const pa = a.index ? a.toNonIndexed() : a, pb = b.index ? b.toNonIndexed() : b;
+    g.setAttribute("position", new THREE.Float32BufferAttribute([...pa.attributes.position.array, ...pb.attributes.position.array], 3)); g.setAttribute("uv", new THREE.Float32BufferAttribute([...pa.attributes.uv.array, ...pb.attributes.uv.array], 2)); g.computeVertexNormals(); return g; };
+  const NGRASS = LITE ? 2400 : 9000, NFLOW = LITE ? 300 : 1400;
+  const grassMat = new THREE.MeshStandardMaterial({ map: tuftTex, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.9 }); grassMat.onBeforeCompile = swayShader;
+  const grass = new THREE.InstancedMesh(crossGeo(0.8, 0.5), grassMat, NGRASS); grass.frustumCulled = false; grass.count = 0; scene.add(grass);
+  const flowerTex = (() => { const c = document.createElement("canvas"); c.width = 32; c.height = 32; const g = c.getContext("2d"); g.strokeStyle = "#4f6a2a"; g.lineWidth = 2; g.beginPath(); g.moveTo(16, 32); g.lineTo(16, 12); g.stroke(); g.fillStyle = "#fff"; for (let k = 0; k < 6; k++) { const a = (k / 6) * 6.28; g.beginPath(); g.arc(16 + Math.cos(a) * 5, 9 + Math.sin(a) * 5, 3.6, 0, 7); g.fill(); } g.fillStyle = "#f2c230"; g.beginPath(); g.arc(16, 9, 3, 0, 7); g.fill(); const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t; })();
+  const flowerMat = new THREE.MeshStandardMaterial({ map: flowerTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.8 }); flowerMat.onBeforeCompile = swayShader;
+  const flowers = new THREE.InstancedMesh(crossGeo(0.35, 0.45), flowerMat, NFLOW); flowers.frustumCulled = false; flowers.count = 0; scene.add(flowers);
+  const FLOWER_COLS = ["#ffffff", "#ffffff", "#f6e05a", "#c9a2f2", "#7fa8ff", "#ff9fb0"].map((c) => new THREE.Color(c));
+  let lastScatter = null;
+  function scatterMeadow(cx, cz, snowLine) {
+    if (lastScatter && Math.hypot(cx - lastScatter[0], cz - lastScatter[1]) < 12) return; lastScatter = [cx, cz];
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), ps = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+    const CELL = LITE ? 2.6 : 1.1, RAD = LITE ? 45 : 60; let ng = 0, nf = 0; const flowerSeason = MONTH >= 4 && MONTH <= 8;
+    const gx0 = Math.floor((cx - RAD) / CELL), gx1 = Math.floor((cx + RAD) / CELL), gz0 = Math.floor((cz - RAD) / CELL), gz1 = Math.floor((cz + RAD) / CELL);
+    for (let gx = gx0; gx <= gx1; gx++) for (let gz = gz0; gz <= gz1; gz++) {
+      if (ng >= NGRASS) break; const hsh = Math.abs(Math.sin(gx * 127.1 + gz * 311.7) * 43758.5453) % 1, hsh2 = Math.abs(Math.sin(gx * 269.5 + gz * 183.3) * 24634.6345) % 1;
+      const x = (gx + hsh) * CELL, z = (gz + hsh2) * CELL; const d = Math.hypot(x - cx, z - cz); if (d > RAD || hsh > 0.85) continue;
+      if (nearTrack(x, z, 3.2)) continue; const g = groundExact(x, z); if (!g || !g.meadow || g.h > snowLine - 40) continue;
+      const s = 0.7 + hsh2 * 0.8; q.setFromAxisAngle(up, hsh * 6.28); m4.compose(ps.set(x, g.h - 0.05, z), q, sc.set(s, s * (0.8 + hsh * 0.6), s)); grass.setMatrixAt(ng++, m4);
+      if (flowerSeason && hsh2 < 0.2 && nf < NFLOW) { m4.compose(ps.set(x + 0.4, g.h - 0.02, z + 0.3), q, sc.setScalar(0.8 + hsh)); flowers.setMatrixAt(nf, m4); flowers.setColorAt(nf, FLOWER_COLS[Math.floor(hsh * 997) % FLOWER_COLS.length]); nf++; }
+    }
+    grass.count = ng; grass.instanceMatrix.needsUpdate = true; flowers.count = nf; flowers.instanceMatrix.needsUpdate = true; if (flowers.instanceColor) flowers.instanceColor.needsUpdate = true;
+  }
+
+  // Leaves on the wind in autumn, blossom petals in spring, drifting seeds in summer
+  const NLEAF = LITE ? 160 : 520; const LBOX = new THREE.Vector3(60, 26, 60);
+  const lGeo = new THREE.BufferGeometry(); { const pp = new Float32Array(NLEAF * 3), rr = new Float32Array(NLEAF), cc = new Float32Array(NLEAF * 3); const pal = MONTH >= 8 && MONTH <= 10 ? ["#d9902b", "#e7b23a", "#b8481f", "#f0c94a", "#8a3a1a"] : MONTH >= 3 && MONTH <= 5 ? ["#fbe3ea", "#ffffff", "#f6c6d6"] : ["#f4f1e6", "#ffffff"];
+    for (let i = 0; i < NLEAF; i++) { pp[i * 3] = Math.random() * LBOX.x; pp[i * 3 + 1] = Math.random() * LBOX.y; pp[i * 3 + 2] = Math.random() * LBOX.z; rr[i] = Math.random(); const c = C(pal[i % pal.length]); cc.set([c.r, c.g, c.b], i * 3); }
+    lGeo.setAttribute("position", new THREE.BufferAttribute(pp, 3)); lGeo.setAttribute("aR", new THREE.BufferAttribute(rr, 1)); lGeo.setAttribute("aC", new THREE.BufferAttribute(cc, 3)); }
+  const leafU = { uT: { value: 0 }, uCam: { value: new THREE.Vector3() }, uBox: { value: LBOX }, uWind: { value: new THREE.Vector2(1.5, 0) }, uAmt: { value: 0 }, uLight: { value: 1 }, uSeeds: { value: MONTH >= 6 && MONTH <= 7 ? 1 : 0 } };
+  const leaves = new THREE.Points(lGeo, new THREE.ShaderMaterial({ uniforms: leafU, transparent: true, depthWrite: false,
+    vertexShader: `#include <common>
+      #include <logdepthbuf_pars_vertex>
+      uniform float uT, uAmt; uniform vec3 uCam, uBox; uniform vec2 uWind; attribute float aR; attribute vec3 aC; varying float vA; varying float vRot; varying vec3 vC;
+      void main(){ float t = uT;
+        vec3 drift = vec3(uWind.x * t + sin(t * .7 + aR * 30.) * 2., -(.5 + aR * .6) * t + sin(t * 1.3 + aR * 9.) * .6, uWind.y * t + cos(t * .6 + aR * 20.) * 2.);
+        vec3 w = mod(position + drift - uCam + uBox * .5, uBox) - uBox * .5 + uCam;
+        vec4 mv = modelViewMatrix * vec4(w, 1.); vA = step(aR, uAmt) * smoothstep(32., 4., length(mv.xyz)); vRot = t * (1.5 + aR * 3.) + aR * 6.28; vC = aC;
+        gl_PointSize = 0.15 * 900. / -mv.z; gl_Position = projectionMatrix * mv;
+        #include <logdepthbuf_vertex>
+      }`,
+    fragmentShader: `#include <common>
+      #include <logdepthbuf_pars_fragment>
+      uniform float uLight, uSeeds; varying float vA; varying float vRot; varying vec3 vC;
+      void main(){
+        #include <logdepthbuf_fragment>
+        vec2 c = gl_PointCoord - .5; float s = sin(vRot), co = cos(vRot); c = vec2(c.x * co - c.y * s, c.x * s + c.y * co);
+        c.y *= 1. + .7 * abs(sin(vRot * .7)); // tumbling: the leaf turns edge-on and back
+        float a = uSeeds > .5 ? smoothstep(.22, .05, length(c)) * .8 : smoothstep(.5, .42, length(c * vec2(1., 1.9)) + abs(c.x) * .2);
+        if (vA * a < .02) discard; gl_FragColor = vec4(vC * uLight, vA * a);
+      }` }));
+  leaves.frustumCulled = false; scene.add(leaves);
+
+  // Low cloud drifting around the peaks when the sky is partly cloudy
+  const cloudTex = (() => { const c = document.createElement("canvas"); c.width = c.height = 128; const g = c.getContext("2d"); for (let i = 0; i < 18; i++) { const x = 30 + Math.random() * 68, y = 44 + Math.random() * 40, r = 14 + Math.random() * 26; const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, "rgba(255,255,255,.55)"); gr.addColorStop(1, "rgba(255,255,255,0)"); g.fillStyle = gr; g.fillRect(0, 0, 128, 128); } return new THREE.CanvasTexture(c); })();
+  const lowClouds = []; for (let i = 0; i < 26; i++) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, depthWrite: false, opacity: 0, fog: true })); sp.userData = { a: Math.random() * 6.28, r: 2500 + Math.random() * 11000, h: 500 + Math.random() * 1100, s: 900 + Math.random() * 1600, v: 0.002 + Math.random() * 0.004 }; scene.add(sp); lowClouds.push(sp); }
+
+  // the sun's glare when you look towards it
+  const glareEl = document.createElement("div"); glareEl.className = "glare"; document.body.appendChild(glareEl); const sunV = new THREE.Vector3();
+  function updateNature(t, p, tun, dt) {
+    const sec = (t / 1000) % 3600; windU.uT.value = sec; leafU.uT.value = sec;
+    const wr = ((WX.windDir + 180) * Math.PI) / 180, ws = Math.min(1, WX.wind / 40); windU.uWind.value.set(Math.sin(wr) * (0.4 + ws), -Math.cos(wr) * (0.4 + ws));
+    leafU.uWind.value.set(Math.sin(wr) * (1 + ws * 5), -Math.cos(wr) * (1 + ws * 5)); leafU.uCam.value.copy(camera.position);
+    const seasonal = MONTH >= 8 && MONTH <= 10 ? 1 : MONTH >= 3 && MONTH <= 5 ? 0.7 : MONTH >= 6 && MONTH <= 7 ? 0.35 : 0;
+    leafU.uAmt.value = tun ? 0 : seasonal * (1 - Math.max(WX.rain, WX.snow)) * (0.4 + 0.6 * ws + 0.3); leafU.uLight.value = 0.35 + 0.65 * skyU.uDay.value;
+    grass.visible = flowers.visible = !tun; if (!tun) scatterMeadow(p.x, p.z, WXU.uSnowLine.value);
+    const cover = WX.cover; const day = skyU.uDay.value;
+    lowClouds.forEach((c, i) => { const u = c.userData; u.a += u.v * dt * 0.05; c.position.set(camera.position.x + Math.cos(u.a) * u.r, p.y + u.h, camera.position.z + Math.sin(u.a) * u.r); c.scale.set(u.s * 1.6, u.s * 0.7, 1);
+      c.material.opacity = (i / lowClouds.length < cover * 0.9 - 0.15 ? 0.75 : 0) * (0.35 + 0.65 * day); c.visible = c.material.opacity > 0.01 && !LITE; c.material.color.setScalar(0.55 + 0.45 * day).lerp(new THREE.Color(0.75, 0.77, 0.8), WX.grey * 0.7); });
+    // glare
+    sunV.copy(skyU.uSun.value).normalize(); const align = sunV.dot(camera.getWorldDirection(new THREE.Vector3()));
+    const sp = sunV.clone().multiplyScalar(1000).add(camera.position).project(camera); const vis2 = sp.z < 1 && Math.abs(sp.x) < 1.3 && Math.abs(sp.y) < 1.3 && sunV.y > -0.02 && !tun && !shadeEl.classList.contains("closed");
+    glareEl.style.opacity = vis2 ? String(Math.max(0, align) ** 3 * (1 - WX.grey) * Math.min(1, sunV.y * 6 + 0.3) * 0.85) : "0";
+    if (vis2) glareEl.style.transform = `translate(${((sp.x + 1) / 2) * innerWidth}px, ${((1 - sp.y) / 2) * innerHeight}px) translate(-50%,-50%)`;
+  }
 
   /* ---------- live weather ---------- */
   const DEMO_W = params.get("weather"); let wxAt = null, wxTime = 0, nextStrike = 0;
@@ -616,7 +852,7 @@
         if (Number.isFinite(td)) tl.push([td, k, name]);
         km = k;
       }
-      const j = s.journey; legs.push({ cat: j.category || "", num: j.number || "", name: j.name || "", to: j.to || "", op: j.operator || "", from: startKm, toKm: km, gex: j.category === "PE" || /glacier/i.test(j.name || "") });
+      const j = s.journey; legs.push({ cat: j.category || "", num: j.number || "", name: j.name || "", to: j.to || "", op: j.operator || "", from: startKm, toKm: km, gex: !!raw.premium && (j.category === "PE" || new RegExp(raw.premium.split(" ")[0], "i").test(j.name || "")) });
     }
     const clean = []; for (const e of tl.sort((a, b) => a[0] - b[0])) { const last = clean[clean.length - 1]; if (last && e[1] < last[1] - 0.2) continue; clean.push(e); }
     if (clean.length < 2) return null;
@@ -637,22 +873,28 @@
     const tl = j.tl; if (t <= tl[0][0]) return tl[0][1]; if (t >= tl[tl.length - 1][0]) return tl[tl.length - 1][1];
     let i = 0; while (i < tl.length - 1 && tl[i + 1][0] <= t) i++;
     const a = tl[i], b = tl[i + 1]; if (b[0] === a[0]) return b[1];
-    return a[1] + (b[1] - a[1]) * ease((t - a[0]) / (b[0] - a[0]));
+    if (Math.abs(b[1] - a[1]) < 0.02) return a[1]; // waiting at a platform
+    // spend the time between stops according to the line's speed profile, easing in and out of stations
+    const R = ROUTES[j.dir]; const c1 = R.costAt(a[1]), c2 = R.costAt(b[1]);
+    return R.kmAtCost(c1 + (c2 - c1) * ease((t - a[0]) / (b[0] - a[0])));
   }
 
   /* ---------- state ---------- */
-  let ride = store.get("ride", null); let dir = ride?.dir || "fwd"; let view = store.get("view", "left");
-  let liveOK = null; const got = store.get("stamps", {});
-  if (PREVIEW) { const d = new Date(); d.setUTCHours(8, 0, 0, 0); const e = estimatedJourneys("fwd", d.getTime()); ride = e[9]; ride.source = "preview"; // a morning departure, so the preview is in daylight
+  let ride = store.get("ride." + RID, null); let dir = ride?.dir || "fwd"; let view = store.get("view", "left");
+  let liveOK = null; const got = store.get("stamps." + RID, {});
+  if (PREVIEW) { const d = new Date(); d.setUTCHours(8, 0, 0, 0); const e = estimatedJourneys("fwd", d.getTime()); ride = e[9]; const hr = params.get("hour"); if (hr != null) { const d2 = new Date(); d2.setUTCHours(Math.max(0, +hr - 6), 0, 0, 0); const e2 = estimatedJourneys("fwd", d2.getTime()); const tgt = d2.getTime() + 4 * 3600000; ride = e2.reduce((a, b) => (Math.abs(b.dep - tgt) < Math.abs(a.dep - tgt) ? b : a)); } /* ?hour=19 previews an evening train */ ride.source = "preview"; // a morning departure, so the preview is in daylight
     dir = "fwd"; const k = +params.get("km") || 0; previewStart = ride.dep + (k / L) * (ride.arr - ride.dep) - 60000; }
   if (ride && now() > ride.arr + 30 * 60000) ride = null;
 
   /* ---------- boarding ---------- */
   const boardEl = $("#board"), tripsEl = $("#trips");
-  function legsLabel(j) { const cats = [...new Set(j.legs.map((l) => (l.gex ? "Glacier Express" : `${l.cat}${l.num ? " " + l.num : ""}`).trim()).filter(Boolean))]; return cats.slice(0, 4).join(" · ") || "Regional trains"; }
+  function legsLabel(j) { const cats = [...new Set(j.legs.map((l) => (l.gex ? raw.premium : `${l.cat}${l.num ? " " + l.num : ""}`).trim()).filter(Boolean))]; return cats.slice(0, 4).join(" · ") || "Regional trains"; }
+  const routeTabs = $("#routes");
+  if (routes.length > 1) routeTabs.innerHTML = routes.map((r) => `<button type="button" data-r="${r.id}" aria-pressed="${r.id === RID}"><b>${esc(r.name)}</b><span>${esc(r.tagline || r.from + " → " + r.to)}</span></button>`).join("");
+  routeTabs.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b || b.dataset.r === RID) return; store.set("route", b.dataset.r); const q = new URLSearchParams(location.search); q.set("route", b.dataset.r); location.search = q.toString(); });
   async function openBoard() {
     boardEl.hidden = false; tripsEl.innerHTML = "<p>Looking for trains on the line…</p>";
-    $("#board .dir").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.d === dir));
+    $("#board .dir").querySelectorAll("button").forEach((b) => { b.setAttribute("aria-pressed", b.dataset.d === dir); b.textContent = b.dataset.d === "fwd" ? `${raw.from} → ${raw.to}` : `${raw.to} → ${raw.from}`; });
     const t = now(); let list = [];
     try {
       const [a, b] = await Promise.all([fetchConnections(dir, new Date(t - 9 * 3600000), 16), fetchConnections(dir, new Date(t), 4)]);
@@ -668,9 +910,9 @@
       return `<button class="trip" type="button" data-dep="${j.dep}"><span class="t">${fmtTime(j.dep)}</span><span class="d"><b>${up ? `Departs in ${mins(j.dep - t)}` : `Near ${esc(near)}`}</b><span>${esc(legsLabel(j))} · arrives ${fmtTime(j.arr)}</span>${up ? "" : `<div class="bar"><i style="width:${pct}%"></i></div>`}</span><span class="p">${up ? "Board" : pct + "%"}</span></button>`;
     };
     tripsEl.innerHTML = (underway.length ? `<div class="sec">On the line now</div>${underway.map((j) => row(j, false)).join("")}` : `<p>No train is on the line right now. Trains run from early morning until the evening.</p>`) + (upcoming.length ? `<div class="sec">Next departures from ${esc(R.from)}</div>${upcoming.map((j) => row(j, true)).join("")}` : "");
-    $("#board .card > p").textContent = liveOK ? "These are real trains crossing the Alps right now, on the route of the Glacier Express. Pick one and you'll ride along in real time. Leave and come back whenever you like: your train keeps going." : "Live train data isn't available right now, so you can ride along a typical timetable instead. The scenery is real; the train times are estimated.";
+    $("#board .card > p").textContent = liveOK ? raw.blurb + " Pick one and you'll ride along in real time. Leave and come back whenever you like: your train keeps going." : "Live train data isn't available right now, so you can ride along a typical timetable instead. The scenery is real; the train times are estimated.";
     $("#boardNote").textContent = liveOK ? "Live times and delays from transport.opendata.ch, the open Swiss public transport API." : "Live train data couldn't be reached, so these times are estimated from a typical timetable. They are not real trains.";
-    tripsEl.querySelectorAll(".trip").forEach((b) => b.addEventListener("click", () => { ride = list.find((j) => j.dep === +b.dataset.dep); store.set("ride", ride); boardEl.hidden = true; startRide(); }));
+    tripsEl.querySelectorAll(".trip").forEach((b) => b.addEventListener("click", () => { ride = list.find((j) => j.dep === +b.dataset.dep); store.set("ride." + RID, ride); boardEl.hidden = true; startRide(); }));
   }
   $("#board .dir").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; dir = b.dataset.d; openBoard(); });
   $("#boardBtn").addEventListener("click", openBoard);
@@ -686,7 +928,7 @@
   let toastT; function toast(html) { const el = $("#toast"); el.innerHTML = html; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (el.hidden = true), 6000); }
   function checkStamps(km, quiet) {
     if (!ride || ride.source !== "live") return;
-    for (const [id, t, d, skm] of ROUTES[ride.dir].stamps) if (km >= skm && !got[id]) { got[id] = Date.now(); store.set("stamps", got); if (!quiet) toast(`<span>Stamp collected</span><b>${esc(t)}</b>`); }
+    for (const [id, t, d, skm] of ROUTES[ride.dir].stamps) if (km >= skm && !got[id]) { got[id] = Date.now(); store.set("stamps." + RID, got); if (!quiet) toast(`<span>Stamp collected</span><b>${esc(t)}</b>`); }
     renderStamps();
   }
 
@@ -773,18 +1015,79 @@
     if (!ride || ride.source !== "live") return;
     try {
       const cs = await fetchConnections(ride.dir, new Date(ride.depLabel || ride.dep), 3);
-      for (const c of cs) { const j = journeyFromConnection(ride.dir, c); if (j && Math.abs((j.depLabel || j.dep) - (ride.depLabel || ride.dep)) < 60000) { ride = j; store.set("ride", ride); liveOK = true; break; } }
+      for (const c of cs) { const j = journeyFromConnection(ride.dir, c); if (j && Math.abs((j.depLabel || j.dep) - (ride.depLabel || ride.dep)) < 60000) { ride = j; store.set("ride." + RID, ride); liveOK = true; break; } }
     } catch { liveOK = false; }
   }
   setInterval(refreshRide, 120000);
+  setInterval(() => refreshOthers(), 240000);
 
   function startRide() {
-    dir = ride.dir; drawStrip(); renderStamps();
+    dir = ride.dir; drawStrip(); renderStamps(); buildStations(ride); refreshOthers();
     checkStamps(kmAt(ride, now()), true); // anything passed while you were away
     const live = $("#live"); live.className = "live" + (ride.source === "estimate" ? " est" : ride.source === "preview" ? " pre" : "");
     live.lastElementChild.textContent = ride.source === "live" ? "Live" : ride.source === "preview" ? `Preview ×${PREVIEW}, not live` : "Estimated times";
     $("#sub").textContent = `${ROUTES[dir].from} → ${ROUTES[dir].to}`;
   }
+
+
+  /* ---------- boarding screen: stays up until the view around the train has loaded ---------- */
+  const loaderEl = $("#loader"); const loadStart = performance.now(); let loaderDone = !loaderEl;
+  function loaderTick() {
+    if (loaderDone) return;
+    const near = [...tiles.values()].filter((t) => t.lv === LEVELS[0] || t.lv === LEVELS[1]);
+    const need = Math.max(1, near.length), got = near.filter((t) => t.mesh && (t.lv !== LEVELS[0] || t.imgDone)).length;
+    const frac = near.length ? got / need : 0; const el = performance.now() - loadStart;
+    $("#loadBar").style.width = `${Math.round(Math.min(1, el / 15000 > frac ? Math.max(frac, el / 30000) : frac) * 100)}%`;
+    $("#loadMsg").textContent = frac < 0.3 ? "Loading the mountains…" : frac < 0.75 ? "Painting in the valleys…" : "Planting the forests…";
+    if ((near.length && frac >= 0.92 && el > 1800) || el > 15000 || failedTiles > 40) { loaderDone = true; if (FILM) showTitle(); loaderEl.classList.add("gone"); setTimeout(() => loaderEl.remove(), 900); }
+  }
+
+  /* ---------- film mode: an opening title, keyboard toggles, and the cursor hides itself ---------- */
+  function showTitle() { const el = $("#filmTitle"); if (!el) return; el.querySelector("span").textContent = `${ROUTES[dir].from} → ${ROUTES[dir].to}`; el.classList.remove("on"); void el.offsetWidth; el.classList.add("on"); }
+  if (FILM) {
+    let idle; const wake = () => { document.body.classList.remove("nocursor"); clearTimeout(idle); idle = setTimeout(() => document.body.classList.add("nocursor"), 1800); }; addEventListener("pointermove", wake); wake();
+    addEventListener("keydown", (e) => { if (e.target.closest?.("input,textarea")) return; const k = e.key.toLowerCase();
+      if (k === "h") document.body.classList.toggle("film"); if (k === "b") document.body.classList.toggle("bars"); if (k === "t") showTitle(); setTimeout(() => { resize(); sizeDrops(); }, 50); });
+  }
+  /* ---------- automatic quality: if frames drop, render fewer pixels and less grass ---------- */
+  let fpsN = 0, fpsT = performance.now(), slowRuns = 0;
+  function perfTick(pf) {
+    fpsN++; if (pf - fpsT < 2500) return; const fps = (fpsN * 1000) / (pf - fpsT); fpsN = 0; fpsT = pf;
+    if (document.hidden || !loaderDone) return;
+    if (fps < 26) { if (++slowRuns >= 2 && PR > 0.75) { PR = Math.max(0.75, PR - 0.35); renderer.setPixelRatio(PR); renderer.setSize(innerWidth, innerHeight, false); grass.count = Math.floor(grass.count * 0.6); slowRuns = 0; } }
+    else slowRuns = 0;
+  }
+
+  /* ---------- postcard ---------- */
+  let wantCard = false;
+  function makePostcard() {
+    const shot = new Image(); shot.src = canvas.toDataURL("image/jpeg", 0.92);
+    shot.onload = async () => {
+      const W = 1600, H = 1100, pc = document.createElement("canvas"); pc.width = W; pc.height = H; const g = pc.getContext("2d");
+      g.fillStyle = "#f5efe3"; g.fillRect(0, 0, W, H);
+      const pw = W - 120, ph = 820, sr = shot.width / shot.height, tr = pw / ph; let sx = 0, sy = 0, sw = shot.width, sh = shot.height;
+      if (sr > tr) { sw = sh * tr; sx = (shot.width - sw) / 2; } else { sh = sw / tr; sy = (shot.height - sh) / 2; }
+      g.drawImage(shot, sx, sy, sw, sh, 60, 60, pw, ph); g.strokeStyle = "rgba(0,0,0,.12)"; g.lineWidth = 2; g.strokeRect(60, 60, pw, ph);
+      const R = ROUTES[dir], km = ride ? kmAt(ride, now()) : 0; const p = R.at(km);
+      let place = R.from; const sts = (raw.stations || []).map(([n, k]) => [n, dir === "rev" ? L - k : k]).sort((a, b) => a[1] - b[1]); for (const [n, skm] of sts) if (skm <= km + 0.5) place = n;
+      g.fillStyle = "#2a2622"; g.font = "600 54px Fraunces, Georgia, serif"; g.fillText(`Greetings from ${place}`, 60, 960);
+      g.font = "400 26px 'Inter Tight', Arial, sans-serif"; g.fillStyle = "#6e675c";
+      const wx = $("#wx").hidden ? "" : " · " + $("#wx").textContent.trim();
+      g.fillText(`${raw.name} · ${R.from} → ${R.to} · ${Math.round(p.y).toLocaleString("en-GB")} m · ${fmtTime(now())}${wx}`, 60, 1010);
+      g.font = "500 22px 'JetBrains Mono', monospace"; g.fillText("Seen from Window Seat, a live train ride across the Alps", 60, 1050);
+      // stamp
+      g.save(); g.translate(W - 170, 990); g.rotate(-0.12); g.strokeStyle = "#d4202c"; g.lineWidth = 4; g.setLineDash([10, 6]); g.beginPath(); g.arc(0, 0, 78, 0, 7); g.stroke(); g.setLineDash([]);
+      g.fillStyle = "#d4202c"; g.textAlign = "center"; g.font = "700 22px 'Inter Tight', Arial"; g.fillText("SWISS ALPS", 0, -22); g.font = "600 30px Fraunces, serif"; g.fillText(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, day: "2-digit", month: "short" }).format(now()).toUpperCase(), 0, 22); g.font = "500 16px 'JetBrains Mono', monospace"; g.fillText(String(new Date(now()).getFullYear()), 0, 50); g.restore();
+      const blob = await new Promise((r) => pc.toBlob(r, "image/jpeg", 0.9)); const name = `window-seat-${place.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.jpg`;
+      const file = new File([blob], name, { type: "image/jpeg" });
+      $("#cardImg").src = URL.createObjectURL(blob); $("#cardSheet").hidden = false;
+      $("#cardSave").onclick = () => { const a = document.createElement("a"); a.href = $("#cardImg").src; a.download = name; a.click(); };
+      $("#cardShare").hidden = !(navigator.canShare && navigator.canShare({ files: [file] }));
+      $("#cardShare").onclick = () => navigator.share({ files: [file], title: "Window Seat", text: `Greetings from ${place}, seen from a live train across the Alps.`, url: location.origin + location.pathname }).catch(() => {});
+    };
+  }
+  $("#cardBtn").addEventListener("click", () => { wantCard = true; $("#flash").classList.remove("snap"); void $("#flash").offsetWidth; $("#flash").classList.add("snap"); });
+  $("#cardClose").addEventListener("click", () => ($("#cardSheet").hidden = true));
 
   /* ---------- frame loop ---------- */
   const look = new THREE.Vector3(); let hx = 0, hz = -1, lastTiles = 0, lastHud = 0, camY = null, lastFrame = performance.now();
@@ -792,9 +1095,14 @@
     requestAnimationFrame(frame);
     const pf = performance.now(), dt = Math.min(0.1, (pf - lastFrame) / 1000) * (PREVIEW || 1); lastFrame = pf;
     const t = now(); setSky(t);
-    const R = ROUTES[dir]; const j = ride; const km = j ? kmAt(j, t) : 0; const p = R.at(km);
+    const R = ROUTES[dir]; const j = ride; const km = j ? kmAt(j, t) : 0;
+    // the front window is the driver's cab at the head of the train; the side windows are in coach 4
+    const headKm = km + myCarOffsetKm(); const p = R.at(view === "front" ? Math.min(L, headKm - 0.003) : km);
+    myTrain.visible = !!j; if (j) placeTrain(myTrain, R, headKm, 0, view === "front" ? 0 : MY_CAR);
+    updateOthers(t, km);
+    NIGHTU.value = 1 - skyU.uDay.value; lampMat.opacity = NIGHTU.value; wallMats.forEach((m) => (m.emissiveIntensity = Math.max(0, NIGHTU.value - 0.25) * 1.6));
     // smooth the heading so curves feel like a train, not a camera cut
-    const k = 0.08; hx += (p.hx - hx) * k; hz += (p.hz - hz) * k; const hl = Math.hypot(hx, hz) || 1; const fx = hx / hl, fz = hz / hl;
+    const k = FILM ? 0.025 : 0.08; hx += (p.hx - hx) * k; hz += (p.hz - hz) * k; const hl = Math.hypot(hx, hz) || 1; const fx = hx / hl, fz = hz / hl;
     const lx = fz, lz = -fx; // left of the direction of travel
     const base = view === "front" ? 0 : view === "left" ? 1.38 : -1.38; const a = base + yawOff;
     const tun = R.inTunnel(km);
@@ -805,7 +1113,7 @@
     look.set(fx * Math.cos(a) + lx * Math.sin(a), Math.tan(pitch), fz * Math.cos(a) + lz * Math.sin(a));
     camera.lookAt(camera.position.x + look.x * 100, camera.position.y + look.y * 100, camera.position.z + look.z * 100);
     lastBearing = Math.atan2(look.x, -look.z); lastHeading = THREE.MathUtils.radToDeg(Math.atan2(fx, -fz));
-    const sway = Math.min(1, speed / 50); camera.rotateZ(Math.sin(t / 610) * 0.0022 * sway + Math.sin(t / 233) * 0.0008 * sway); // the carriage rocks a little at speed
+    const sway = Math.min(1, speed / 50); camera.rotateZ((Math.sin(t / 610) * 0.0022 + (FILM ? 0 : Math.sin(t / 233) * 0.0008)) * sway * (FILM ? 0.6 : 1)); // the carriage rocks a little at speed
     skyDome.position.copy(camera.position);
     if (performance.now() - lastTiles > 400) {
       lastTiles = performance.now(); const [la, lo] = toLL(p.x, p.z); updateTiles(la, lo); updatePeek(p, !!tun); updateBuildings(dir === "rev" ? L - km : km);
@@ -813,16 +1121,21 @@
       if (!wxAt || moved > 8 || Date.now() - wxTime > 10 * 60000) { wxAt = [la, lo]; wxTime = Date.now(); refreshWeather(la, lo, p.y); }
     }
     weatherTick(dt / (PREVIEW || 1), t, p, tun);
+    updateNature(t, p, tun, dt / (PREVIEW || 1));
     updateBirds(pf, camera.position, !tun && skyU.uDay.value > 0.35 && WX.rain + WX.snow < 0.5 && WX.vis > 1500);
     if (pf - lastDrops > 33) { updateDrops((pf - lastDrops) / 1000, !!tun, speed); lastDrops = pf; }
     WSAudio.update({ speed, rain: WX.rain, snow: WX.snow, wind: WX.wind, tunnel: !!tun });
     renderer.render(scene, camera);
+    if (wantCard) { wantCard = false; makePostcard(); }
+    loaderTick(); perfTick(pf);
     // tunnel
     const tEl = $("#tunnel"); tEl.classList.toggle("on", !!tun && j);
     if (tun && j) { $("#tName").textContent = tun[2] || "Tunnel"; $("#tInfo").textContent = `${(tun[1] - tun[0]).toFixed(1)} km · ${(tun[1] - km).toFixed(1)} km to daylight`; if (!tEl.dataset.lamps) { tEl.dataset.lamps = 1; for (let i = 0; i < 4; i++) { const l = document.createElement("i"); l.style.animationDelay = `${-i * 0.27}s`; tEl.appendChild(l); } } }
     if (j && performance.now() - lastHud > 500) { lastHud = performance.now(); hud(t, km); }
   }
-  let prevKm = null, prevT = null, speed = 0;
+  let prevKm = null, prevT = null, speed = 0, wasAtPlatform = null; const storyShown = new Set();
+  let storyT; function showStory(title, story) { if (document.body.classList.contains("film")) return; const el = $("#story"); el.querySelector("b").textContent = title; el.querySelector("p").textContent = story; el.hidden = false; clearTimeout(storyT); storyT = setTimeout(() => (el.hidden = true), 18000); }
+  $("#storyClose").addEventListener("click", () => ($("#story").hidden = true));
   function hud(t, km) {
     const R = ROUTES[dir]; const j = ride;
     if (prevKm != null && t > prevT) { const v = ((km - prevKm) / ((t - prevT) / 3600000)); speed += (Math.max(0, v) - speed) * 0.35; }
@@ -835,12 +1148,15 @@
     else if (t >= j.arr) { $("#nextLabel").textContent = "Arrived"; $("#nextName").textContent = R.to; $("#nextEta").textContent = `at ${fmtTime(j.arr)} · choose another train to keep riding`; }
     else {
       let i = 0; while (i < tl.length - 1 && tl[i + 1][0] <= t) i++;
-      if (tl[i + 1] && Math.abs(tl[i + 1][1] - tl[i][1]) < 0.05) { $("#nextLabel").textContent = "At the platform"; $("#nextName").textContent = tl[i][2]; $("#nextEta").textContent = `departs ${fmtTime(tl[i + 1][0])}`; }
+      const atPlatform = tl[i + 1] && Math.abs(tl[i + 1][1] - tl[i][1]) < 0.05;
+      if (atPlatform !== wasAtPlatform) { if (wasAtPlatform !== null) window.WSAudio?.chime?.(); wasAtPlatform = atPlatform; }
+      if (atPlatform) { $("#nextLabel").textContent = "At the platform"; $("#nextName").textContent = tl[i][2]; $("#nextEta").textContent = `departs ${fmtTime(tl[i + 1][0])}`; }
       else { const n = tl[i + 1] || tl[i]; $("#nextLabel").textContent = "Next stop"; $("#nextName").textContent = n[2]; $("#nextEta").textContent = `${fmtTime(n[0])} · in ${mins(Math.max(0, n[0] - t))}`; }
     }
     const leg = j.legs.find((l) => km >= l.from - 0.05 && km <= l.toKm + 0.05) || j.legs[0];
-    $("#trainName").innerHTML = leg ? `${leg.gex ? "<em>Glacier Express</em>" : leg.cat ? `<em>${esc(leg.cat)}${leg.num ? " " + esc(leg.num) : ""}</em>` : ""}${leg.to ? "to " + esc(leg.to) : esc(leg.name)}` : "";
+    $("#trainName").innerHTML = leg ? `${leg.gex ? `<em>${esc(raw.premium)}</em>` : leg.cat ? `<em>${esc(leg.cat)}${leg.num ? " " + esc(leg.num) : ""}</em>` : ""}${leg.to ? "to " + esc(leg.to) : esc(leg.name)}` : "";
     checkStamps(km, false);
+    for (const [id, title, , skm, story] of R.stamps) if (story && !storyShown.has(id) && km > skm - 1.2 && km < skm + 0.3) { storyShown.add(id); showStory(title, story); }
     const live = $("#live"); if (j.source === "live" && liveOK === false) live.lastElementChild.textContent = "Live (reconnecting)";
   }
 

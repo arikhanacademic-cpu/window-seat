@@ -1,6 +1,7 @@
-// Builds the exact railway line from Zermatt to St. Moritz, with an elevation profile.
+// Builds each railway route in config.json (Glacier Express, Bernina, Gotthard…), with an elevation profile.
 //
-//   node scripts/build-route.mjs
+//   node scripts/build-route.mjs            all routes
+//   ROUTE=bernina node scripts/build-route.mjs   one route
 //
 // 1. Downloads every metre-gauge railway in the corridor from OpenStreetMap (Overpass API).
 // 2. Turns the tracks into a graph and finds the path through each station in config.json.
@@ -8,27 +9,52 @@
 //    Inside tunnels and on bridges the height is interpolated between the two ends,
 //    so the train goes through mountains and across gorges instead of following the ground.
 //
-// Output: public/data/route.json      Cache: cache/osm.json, cache/terrain/*.png
+// Output: public/data/<route>/route.json, public/data/routes.json      Cache: cache/<route>/, cache/terrain/
 
 import { readFile, writeFile, mkdir, access } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { decodePNG } from "./png.mjs";
 
 const ROOT = new URL("../", import.meta.url);
-const config = JSON.parse(await readFile(new URL("config.json", ROOT)));
-const CACHE = new URL("cache/", ROOT), TERRAIN = new URL("cache/terrain/", ROOT);
-await mkdir(TERRAIN, { recursive: true });
+const ALL = JSON.parse(await readFile(new URL("config.json", ROOT)));
 await mkdir(new URL("public/data/", ROOT), { recursive: true });
+
+// Without ROUTE set, build every route in its own process, then write the index of the ones that worked.
+if (!process.env.ROUTE) {
+  const ok = [];
+  for (const r of ALL.routes) {
+    console.log(`\n=== ${r.name} ===`);
+    const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, ROUTE: r.id }, stdio: "inherit" });
+    if (res.status === 0) ok.push({ id: r.id, name: r.name, from: r.from, to: r.to, tagline: r.tagline }); else console.warn(`!! ${r.name} failed; the site will be published without it.`);
+  }
+  await writeFile(new URL("public/data/routes.json", ROOT), JSON.stringify(ok));
+  console.log(`\nBuilt ${ok.length} of ${ALL.routes.length} routes.`);
+  process.exit(ok.some((r) => r.id === ALL.routes[0].id) ? 0 : 1);
+}
+const config = ALL.routes.find((r) => r.id === process.env.ROUTE);
+if (!config) { console.error(`Unknown route ${process.env.ROUTE}`); process.exit(1); }
+const ID = config.id;
+const CACHE = new URL(`cache/${ID}/`, ROOT), TERRAIN = new URL("cache/terrain/", ROOT), OUTDIR = `public/data/${ID}/`;
+await mkdir(TERRAIN, { recursive: true }); await mkdir(CACHE, { recursive: true });
+await mkdir(new URL(OUTDIR + "buildings/", ROOT), { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const exists = async (u) => { try { await access(u); return true; } catch { return false; } };
 
 /* ---------- 1. OpenStreetMap ---------- */
 const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
 const { south, west, north, east } = config.corridor; const B = `${south},${west},${north},${east}`;
-const QUERY = `[out:json][timeout:300];
+const STANDARD = config.gauge === "standard";
+const QUERY = STANDARD ? `[out:json][timeout:300];
+(
+  way["railway"="rail"](${B});
+  node["railway"~"^(station|halt)$"](${B});
+);
+out tags geom;` : `[out:json][timeout:300];
 (
   way["railway"="narrow_gauge"](${B});
   way["railway"="rail"]["gauge"="1000"](${B});
-  way["railway"="rail"]["operator"~"Matterhorn|Rh.tische|RhB|MGB",i](${B});
+  way["railway"="rail"]["operator"~"Matterhorn|Rh.tische|RhB|MGB|Bernina",i](${B});
   node["railway"~"^(station|halt)$"](${B});
 );
 out tags geom;`;
@@ -66,6 +92,8 @@ for (const el of osm.elements) {
   if (el.type !== "way" || !el.geometry) continue;
   const t = el.tags || {};
   if (!t.railway || ["abandoned", "disused", "construction", "proposed"].includes(t.railway)) continue;
+  if (STANDARD && (t.gauge === "1000" || t.railway === "narrow_gauge")) continue;
+  if (!STANDARD && t.railway === "rail" && t.gauge && t.gauge !== "1000") continue;
   const tunnel = t.tunnel && t.tunnel !== "no" ? 1 : 0, bridge = !tunnel && t.bridge && t.bridge !== "no" ? 1 : 0;
   const name = tunnel ? t["tunnel:name"] || t.name || "" : bridge ? t["bridge:name"] || t.name || "" : "";
   const attr = { tunnel, bridge, name };
@@ -198,12 +226,12 @@ function nearestKm(lat, lon, fromIdx) {
   return best;
 }
 let from = 0; const stamps = [];
-for (const [id, title, text, lat, lon, tunnelKey] of config.stamps) {
+for (const [id, title, text, lat, lon, tunnelKey, story] of config.stamps) {
   let i = -1;
   if (tunnelKey) { const t = tunnels.find((t) => t[0] >= from && norm(t[2]).includes(norm(tunnelKey))) || tunnels.filter((t) => t[0] >= from).sort((p, q) => (q[1] - q[0]) - (p[1] - p[0]))[0]; if (t) i = Math.round((t[0] + t[1]) / 2); }
   else i = nearestKm(lat, lon, from);
   if (i < 0) { console.warn(`  stamp "${title}" not found near the route, skipped`); continue; }
-  stamps.push([id, title, text, +kmOf(i).toFixed(2)]); from = i;
+  stamps.push([id, title, text, +kmOf(i).toFixed(2), story || ""]); from = i;
 }
 
 /* ---------- 7. buildings near the track ----------
@@ -211,7 +239,6 @@ for (const [id, title, text, lat, lon, tunnelKey] of config.stamps) {
    with a height, a roof shape and a local style (dark larch chalets up high, white plaster lower down). */
 const BCHUNK = 5; // km per file
 const buildingChunks = [];
-await mkdir(new URL("public/data/buildings/", ROOT), { recursive: true });
 try {
   const bFile = new URL("buildings.json", CACHE);
   if (!(await exists(bFile))) {
@@ -262,7 +289,7 @@ try {
       const rec = [Math.round(h * 2), cls, roof, Math.round(ele0)]; for (const [a, b] of ring) rec.push(+a.toFixed(6), +b.toFixed(6));
       (chunks.get(ci) || chunks.set(ci, []).get(ci)).push(rec); nb++;
     }
-    for (const [ci, list] of chunks) { await writeFile(new URL(`public/data/buildings/${ci}.json`, ROOT), JSON.stringify(list)); buildingChunks.push(ci); }
+    for (const [ci, list] of chunks) { await writeFile(new URL(`${OUTDIR}buildings/${ci}.json`, ROOT), JSON.stringify(list)); buildingChunks.push(ci); }
     console.log(`${nb} buildings near the track, in ${chunks.size} files`);
   }
 } catch (e) { console.warn("Buildings skipped:", e.message); }
@@ -272,6 +299,7 @@ const flat = [];
 for (let i = 0; i < pts.length; i++) flat.push(+pts[i].lat.toFixed(6), +pts[i].lon.toFixed(6), Math.round(sm[i]), pts[i].tunnel ? 1 : pts[i].bridge ? 2 : 0);
 const out = {
   built: new Date().toISOString().slice(0, 10), step: STEP, length: +kmOf(pts.length - 1).toFixed(2),
+  id: ID, name: config.name, gauge: config.gauge || "metre", premium: config.premium || null, blurb: config.blurb || "", tagline: config.tagline || "",
   from: config.from, to: config.to, via: config.via,
   pts: flat,
   stations: stops.map((s, i) => [s.name, +stationKm[i].toFixed(2)]),
@@ -280,6 +308,6 @@ const out = {
   stamps,
   buildings: { chunkKm: BCHUNK, chunks: buildingChunks.sort((a, b) => a - b) }
 };
-await writeFile(new URL("public/data/route.json", ROOT), JSON.stringify(out));
+await writeFile(new URL(OUTDIR + "route.json", ROOT), JSON.stringify(out));
 const maxE = Math.max(...sm), maxI = sm.indexOf(maxE);
-console.log(`Wrote public/data/route.json: ${out.length} km, ${tunnels.length} tunnels, ${bridges.length} bridges, highest point ${Math.round(maxE)} m at km ${kmOf(maxI).toFixed(1)}`);
+console.log(`Wrote ${OUTDIR}route.json: ${out.length} km, ${tunnels.length} tunnels, ${bridges.length} bridges, highest point ${Math.round(maxE)} m at km ${kmOf(maxI).toFixed(1)}`);

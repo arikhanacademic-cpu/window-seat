@@ -74,6 +74,22 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
 .trainmark{width:30px;height:30px;display:grid;place-items:center}
 .trainmark svg{filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
 .flash{position:fixed;inset:0;z-index:1;pointer-events:none;background:#eef3ff;opacity:0}
+.flash.snap{animation:snap .5s ease-out;background:#fff}
+@keyframes snap{0%{opacity:.85}100%{opacity:0}}
+/* boarding screen: a pixel train running round a little loop of track */
+.loader{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 40%,#2b3a4a 0%,#141319 70%);transition:opacity .8s ease}
+.loader.gone{opacity:0;pointer-events:none}
+.loader .in{display:grid;justify-items:center;gap:14px;text-align:center;padding:16px}
+.loader canvas{width:min(260px,62vw);height:auto;image-rendering:pixelated}
+.loader h2{font-family:var(--display);font-weight:600;font-size:clamp(26px,5vw,38px);margin:0}
+.loader p{margin:0;color:var(--muted);font-size:13px}
+.loader .track{width:min(240px,60vw);height:4px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden}
+.loader .track i{display:block;height:100%;width:0;background:var(--red);transition:width .4s ease}
+.loader small{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.postcard img{width:100%;border-radius:6px;display:block;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.postcard .row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.postcard .row button{flex:1;min-width:120px;padding:10px 14px;border-radius:999px;border:1px solid var(--line);background:var(--ink);color:var(--cabin);font-weight:600;cursor:pointer}
+.postcard .row button.alt{background:transparent;color:var(--ink)}
 .flash.on{animation:flash .9s ease-out}
 @keyframes flash{0%{opacity:.32}8%{opacity:.04}14%{opacity:.24}100%{opacity:0}}
 .wx{display:inline-flex;align-items:center;gap:6px;background:var(--glass);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:999px;padding:7px 12px;font-size:12px;white-space:nowrap}
@@ -120,6 +136,10 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
 .dir{display:flex;gap:6px;margin-bottom:12px}
 .dir button{flex:1;background:none;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:13px;color:var(--muted)}
 .dir button[aria-pressed="true"]{border-color:var(--ink);color:var(--ink)}
+.routes{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;margin-bottom:12px}
+.routes button{text-align:left;background:none;border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:2px}
+.routes button b{font-size:13px;font-weight:600}.routes button span{font-size:11px;color:var(--muted);line-height:1.3}
+.routes button[aria-pressed="true"]{border-color:var(--red);background:rgba(212,32,44,.12)}
 .list{display:flex;flex-direction:column;gap:8px}
 .trip{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;text-align:left;background:#26252c;border:1px solid var(--line);border-radius:12px;padding:10px 12px}
 .trip:hover{border-color:var(--ink)}
@@ -142,9 +162,30 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
 .toast{position:fixed;left:50%;top:84px;transform:translateX(-50%);z-index:8;background:#1d1c22;border:1px solid var(--red);border-radius:12px;padding:10px 14px;display:flex;gap:10px;align-items:center;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:calc(100% - 32px)}
 .toast b{font-family:var(--display);font-weight:600}
 .toast span{color:var(--muted);font-size:12px}
+.story{position:fixed;left:clamp(22px,4vw,64px);top:110px;z-index:6;width:min(340px,calc(100% - 44px));background:rgba(23,22,27,.86);backdrop-filter:blur(10px);border:1px solid var(--line);border-left:3px solid var(--red);border-radius:12px;padding:12px 14px;animation:slidein .5s ease}
+.story small{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.story b{display:block;font-family:var(--display);font-weight:600;font-size:20px;margin:2px 0 6px}
+.story p{margin:0;font-size:13px;line-height:1.5;color:#ddd6cb}
+@keyframes slidein{from{transform:translateX(-12px);opacity:0}to{transform:none;opacity:1}}
+.glare{position:fixed;left:0;top:0;width:70vmin;height:70vmin;pointer-events:none;z-index:1;opacity:0;mix-blend-mode:screen;background:radial-gradient(circle,rgba(255,244,214,.75) 0%,rgba(255,214,150,.28) 18%,rgba(255,200,140,.08) 42%,transparent 66%);transition:opacity .4s}
 .err{position:fixed;inset:0;display:grid;place-items:center;z-index:20;padding:16px}
 .foot{position:fixed;left:clamp(22px,4vw,64px);right:auto;max-width:calc(100% - 420px);bottom:126px;z-index:3;font-size:10px;color:rgba(244,239,230,.6);text-shadow:0 1px 3px #000}
 .foot a{color:inherit}
+/* film mode (?film=1): nothing but the view. H shows the controls, B toggles the bars, T replays the title */
+body.film{--wl:0px;--wr:0px;--wt:0px;--wb:0px;--wrad:0}
+body.film .top,body.film .ledge,body.film .peek,body.film .foot,body.film .wallshade,body.film .winbar,body.film .story,body.film .tunnel .tn{display:none!important}
+body.film .frame{visibility:hidden}
+body.film #view{filter:saturate(1.07) contrast(1.04)}
+body.film::before{content:"";position:fixed;inset:0;z-index:3;pointer-events:none;background:radial-gradient(120% 90% at 50% 45%,transparent 60%,rgba(0,0,0,.28))}
+body.bars.film .lb{display:block}
+.lb{display:none;position:fixed;left:0;right:0;height:max(0px,calc((100vh - 100vw / 2.39) / 2));background:#000;z-index:8;pointer-events:none}
+.lb.t{top:0}.lb.b{bottom:0}
+body.nocursor,body.nocursor #view{cursor:none}
+.ftitle{position:fixed;inset:0;z-index:7;display:grid;place-items:center;pointer-events:none;opacity:0;text-align:center;color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.45)}
+.ftitle.on{animation:ftitle 6.5s ease forwards}
+.ftitle b{display:block;font-family:var(--display);font-weight:500;font-size:clamp(40px,7vw,96px);letter-spacing:.01em;line-height:1}
+.ftitle span{display:block;margin-top:14px;font-family:var(--mono);font-size:clamp(11px,1.2vw,15px);letter-spacing:.3em;text-transform:uppercase;opacity:.85}
+@keyframes ftitle{0%{opacity:0;transform:scale(.985)}18%{opacity:1}70%{opacity:1}100%{opacity:0;transform:scale(1.015)}}
 @media (max-width:760px){
   .ledge{grid-template-columns:1fr auto;grid-template-rows:auto auto;height:176px;gap:4px 12px}
   :root{--wb:176px}
@@ -161,12 +202,56 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
   .strip .lbl:not(.keep){display:none}
   #sub{display:none}
   .top{gap:8px}
+  .top .btn .t{display:none}
 }
 @media (prefers-reduced-motion:reduce){.tunnel i{animation:none}.live i{animation:none}}
 </style>
 </head>
 <body>
 <canvas id="view" aria-label="Live 3D view from the train window"></canvas>
+<div class="lb t" aria-hidden="true"></div><div class="lb b" aria-hidden="true"></div>
+<div class="ftitle" id="filmTitle" aria-hidden="true"><div><b>Window Seat</b><span></span></div></div>
+<div class="loader" id="loader" role="status" aria-live="polite"><div class="in">
+  <canvas id="pixtrain" width="104" height="72" aria-hidden="true"></canvas>
+  <small>Window Seat</small><h2>Boarding…</h2>
+  <div class="track"><i id="loadBar"></i></div><p id="loadMsg">Finding your train…</p>
+</div></div>
+<script>
+// Pixel-art train on a loop of track, drawn at 104×72 and scaled up crisp.
+(function () {
+  const c = document.getElementById("pixtrain"), g = c.getContext("2d"); const W = 104, H = 72, cx = 52, cy = 38, rx = 40, ry = 22;
+  const px = (x, y, col) => { g.fillStyle = col; g.fillRect(Math.round(x), Math.round(y), 1, 1); };
+  const rect = (x, y, w, h, col) => { g.fillStyle = col; g.fillRect(Math.round(x), Math.round(y), w, h); };
+  const pine = (x, y) => { rect(x, y + 6, 1, 2, "#5a3d26"); for (let i = 0; i < 6; i++) rect(x - (i >> 1), y + i, 1 + 2 * (i >> 1), 1, i % 2 ? "#2f5a3a" : "#3c6e45"); };
+  function scene(t) {
+    g.clearRect(0, 0, W, H);
+    // mountains
+    g.fillStyle = "#3a4a5c"; g.beginPath(); g.moveTo(8, 30); g.lineTo(30, 6); g.lineTo(44, 20); g.lineTo(58, 2); g.lineTo(78, 24); g.lineTo(96, 30); g.fill();
+    g.fillStyle = "#e8eef4"; g.beginPath(); g.moveTo(53, 8); g.lineTo(58, 2); g.lineTo(63, 8); g.lineTo(60, 7); g.lineTo(58, 9); g.lineTo(56, 7); g.fill();
+    g.beginPath(); g.moveTo(26, 11); g.lineTo(30, 6); g.lineTo(34, 11); g.lineTo(30, 10); g.fill();
+    // meadow inside the loop
+    g.fillStyle = "#2f4d34"; g.beginPath(); g.ellipse(cx, cy, rx + 3, ry + 3, 0, 0, 7); g.fill();
+    g.fillStyle = "#3b6141"; g.beginPath(); g.ellipse(cx, cy, rx - 6, ry - 6, 0, 0, 7); g.fill();
+    // track: sleepers then rails
+    for (let a = 0; a < 6.283; a += 0.13) rect(cx + Math.cos(a) * rx - 1, cy + Math.sin(a) * ry, 3, 1, "#6b4a32");
+    for (let a = 0; a < 6.283; a += 0.01) { px(cx + Math.cos(a) * (rx - 1.2), cy + Math.sin(a) * (ry - 1.2), "#9aa3ad"); px(cx + Math.cos(a) * (rx + 1.2), cy + Math.sin(a) * (ry + 1.2), "#9aa3ad"); }
+    pine(46, 30); pine(54, 32); pine(60, 29); rect(40, 38, 6, 4, "#e9e1cf"); rect(39, 36, 8, 2, "#8a3a2a"); rect(42, 39, 1, 1, "#ffd27a");
+    // train: loco + 3 coaches, chunky pixel sprites following the loop, far side drawn first
+    const cars = []; for (let k = 0; k < 4; k++) { const a = t - k * 0.27; cars.push({ k, x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry }); }
+    cars.sort((p, q) => p.y - q.y).forEach(({ k, x, y }) => {
+      const X = Math.round(x) - 4, Y = Math.round(y) - 6;
+      rect(X, Y, 9, 1, "#f2ece2"); rect(X, Y + 1, 9, 5, k === 0 ? "#b5141b" : "#d4202c");
+      if (k === 0) { rect(X + 1, Y + 2, 3, 2, "#20232a"); rect(X + 5, Y + 2, 3, 1, "#f2ece2"); }
+      else for (let w = 0; w < 3; w++) rect(X + 1 + w * 3, Y + 2, 2, 2, "#bfe0f7");
+      rect(X, Y + 6, 9, 1, "#2a2a30"); rect(X + 1, Y + 7, 2, 1, "#111"); rect(X + 6, Y + 7, 2, 1, "#111");
+    });
+    // a puff of steam-white cloud
+    for (let i = 0; i < 3; i++) { const q = ((t * 0.6 + i * 0.33) % 1); rect(10 + q * 90, 12 - Math.sin(q * 6) * 2 + i * 3, 4, 1, `rgba(255,255,255,${0.25 * (1 - q)})`); }
+  }
+  let t0 = performance.now(); (function loop() { const el = document.getElementById("loader"); if (!el || !el.isConnected) return; scene(((performance.now() - t0) / 1000) * 1.3); requestAnimationFrame(loop); })();
+})();
+</script>
+
 <div class="tunnel" id="tunnel" aria-live="polite"><div class="tn"><b id="tName">Tunnel</b><span id="tInfo"></span></div></div>
 <canvas class="drops" id="drops" aria-hidden="true"></canvas>
 <div class="flash" id="flash" aria-hidden="true"></div>
@@ -178,11 +263,12 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
   <div class="brand"><b>Window Seat</b><span id="sub">Zermatt → St. Moritz, live</span><span class="live" id="live"><i></i><span>Connecting…</span></span></div>
   <span class="wx" id="wx" hidden></span>
   <div class="pill" role="group" aria-label="Window"><button type="button" data-v="left" aria-pressed="true">Left</button><button type="button" data-v="front" aria-pressed="false">Front</button><button type="button" data-v="right" aria-pressed="false">Right</button></div>
-  <button class="btn" type="button" id="winBtn" title="Lean to the window">◉ Window view</button>
-  <button class="btn" type="button" id="stampsBtn">Stamps <span id="stampCount">0</span></button>
-  <button class="btn" type="button" id="musicBtn" aria-pressed="false" title="Lofi music, generated live">♪ Lofi</button>
+  <button class="btn" type="button" id="winBtn" title="Lean to the window" aria-label="Window view">◉<span class="t"> Window view</span></button>
+  <button class="btn" type="button" id="cardBtn" title="Save this view as a postcard" aria-label="Postcard">✉<span class="t"> Postcard</span></button>
+  <button class="btn" type="button" id="stampsBtn" aria-label="Stamps">★<span class="t"> Stamps</span> <span id="stampCount">0</span></button>
+  <button class="btn" type="button" id="musicBtn" aria-pressed="false" title="Lofi music, generated live" aria-label="Lofi music">♪<span class="t"> Lofi</span></button>
   <button class="btn" type="button" id="soundBtn" aria-pressed="false" title="Train, rain and thunder sounds">Sound</button>
-  <button class="btn" type="button" id="boardBtn">Change train</button>
+  <button class="btn" type="button" id="boardBtn" aria-label="Change train">⇄<span class="t"> Change train</span></button>
 </header>
 
 <section class="ledge" aria-label="Journey">
@@ -209,13 +295,14 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
   <div class="mapbox"><div id="peekmap"></div><button type="button" class="recenter" id="recenter" hidden>Follow train</button></div>
 </section>
 
-<div class="foot">Imagery © <a href="https://www.swisstopo.admin.ch" target="_blank" rel="noopener">swisstopo</a> · Terrain: Mapzen/AWS Terrain Tiles · Railway © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> · Timetable: <a href="https://transport.opendata.ch" target="_blank" rel="noopener">transport.opendata.ch</a> · Weather: <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> · by Ari Khan</div>
+<div class="foot">Imagery © <a href="https://www.swisstopo.admin.ch" target="_blank" rel="noopener">swisstopo</a> · Terrain: Mapzen/AWS Terrain Tiles · Railway © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> · Timetable: <a href="https://transport.opendata.ch" target="_blank" rel="noopener">transport.opendata.ch</a> · Weather: <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> · <a href="how.html">How it works</a> · by Ari Khan</div>
 
 <div class="sheet" id="board" hidden><div class="card" role="dialog" aria-labelledby="bTitle">
   <button class="close" type="button" id="boardClose" aria-label="Close">×</button>
   <h2 id="bTitle">Take a window seat</h2>
   <p>These are real trains crossing the Alps right now, on the route of the Glacier Express. Pick one and you'll ride along in real time. Leave and come back whenever you like: your train keeps going.</p>
-  <div class="dir" role="group" aria-label="Direction"><button type="button" data-d="fwd" aria-pressed="true">Zermatt → St. Moritz</button><button type="button" data-d="rev" aria-pressed="false">St. Moritz → Zermatt</button></div>
+  <div class="routes" id="routes" role="group" aria-label="Line"></div>
+  <div class="dir" role="group" aria-label="Direction"><button type="button" data-d="fwd" aria-pressed="true"></button><button type="button" data-d="rev" aria-pressed="false"></button></div>
   <div id="trips" class="list"><p>Looking for trains…</p></div>
   <p class="note" id="boardNote"></p>
 </div></div>
@@ -228,6 +315,12 @@ body.window .foot{bottom:122px;max-width:calc(50% - 280px);font-size:9px}
 </div></div>
 
 <div class="toast" id="toast" hidden role="status"></div>
+<aside class="story" id="story" hidden aria-live="polite"><button type="button" class="close" id="storyClose" aria-label="Close">×</button><small>Coming up</small><b></b><p></p></aside>
+<div class="sheet" id="cardSheet" hidden><div class="card postcard" role="dialog" aria-label="Postcard">
+  <button class="close" type="button" id="cardClose" aria-label="Close">×</button>
+  <img id="cardImg" alt="Postcard of the current view from the train">
+  <div class="row"><button type="button" id="cardSave">Save postcard</button><button type="button" class="alt" id="cardShare" hidden>Share</button></div>
+</div></div>
 <div class="err" id="err" hidden><div class="card"></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>

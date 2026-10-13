@@ -1,7 +1,7 @@
 // Test fixtures: synthetic Alps, railway and live timetable in the real data formats.
 import { deflateSync } from "node:zlib";
 import { readFileSync } from "node:fs";
-const config = JSON.parse(readFileSync(new URL("../config.json", import.meta.url)));
+const config = JSON.parse(readFileSync(new URL("../config.json", import.meta.url))).routes[0];
 const FLOOR = { "Zermatt": 1605, "Visp": 650, "Brig": 680, "Fiesch": 1050, "Oberwald": 1370, "Realp": 1540, "Andermatt": 1436, "Oberalppass": 2033, "Disentis/Mustér": 1130, "Ilanz": 700, "Reichenau-Tamins": 600, "Chur": 585, "Thusis": 700, "Tiefencastel": 850, "Filisur": 1030, "Bergün/Bravuogn": 1370, "Preda": 1790, "Samedan": 1720, "Celerina": 1730, "St. Moritz": 1775 };
 const S = config.stations; const MX = 111320 * Math.cos(46.4 * Math.PI / 180), MY = 110574;
 export function elevation(lat, lon) {

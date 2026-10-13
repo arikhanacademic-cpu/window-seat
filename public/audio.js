@@ -99,6 +99,15 @@ window.WSAudio = (() => {
     music(on) { init(); ctx.resume(); musicOn = on; musicBus.gain.setTargetAtTime(on ? 0.85 : 0, ctx.currentTime, 0.5); if (on) { nextTime = ctx.currentTime + 0.1; step = 0; } },
     ambience(on) { init(); ctx.resume(); ambOn = on; ambBus.gain.setTargetAtTime(on ? 0.9 : 0, ctx.currentTime, 0.5); },
     update(s) { Object.assign(state, s); },
+    chime() { // the door chime as the train arrives and leaves a station
+      if (!ctx || !ambOn) return; const t = ctx.currentTime + 0.05;
+      [[659.3, 0], [523.3, 0.42]].forEach(([f, dt]) => { const o = ctx.createOscillator(); o.type = "sine"; o.frequency.value = f; const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(0.16, t + dt + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 1.3); o.connect(g); g.connect(ambBus); o.start(t + dt); o.stop(t + dt + 1.4); });
+    },
+    whoosh() { // another train flashing past the window
+      if (!ctx || !ambOn) return; const t = ctx.currentTime + 0.02; const s = ctx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(1400, t + 1.2); bp.frequency.exponentialRampToValueAtTime(250, t + 3.5);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 1.1); g.gain.exponentialRampToValueAtTime(0.0001, t + 3.8); s.connect(bp); bp.connect(g); g.connect(ambBus); s.start(t); s.stop(t + 4);
+    },
     thunder(near) {
       if (!ctx || !ambOn) return; const t = ctx.currentTime + 0.05;
       const s = ctx.createBufferSource(); s.buffer = noiseBuf; s.playbackRate.value = 0.35; const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.setValueAtTime(near ? 1600 : 500, t); lp.frequency.exponentialRampToValueAtTime(70, t + 4);
