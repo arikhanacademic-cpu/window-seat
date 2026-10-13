@@ -1,0 +1,63 @@
+# Builds the railway route from OpenStreetMap and publishes the site to GitHub Pages.
+# Runs on every push to main, or from the Actions tab ("Build and deploy" → Run workflow).
+# Downloads are cached between runs, even when a run fails.
+name: Build and deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Restore downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: route-${{ hashFiles('config.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: route-${{ hashFiles('config.json') }}-
+      - name: Build the route
+        id: route
+        continue-on-error: true
+        run: node scripts/build-route.mjs
+      - name: Save downloads
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: route-${{ hashFiles('config.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Stop if the route didn't build
+        if: steps.route.outcome != 'success'
+        run: |
+          echo "The route build failed (usually a busy OpenStreetMap server). Re-run this workflow; finished downloads are kept."
+          exit 1
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

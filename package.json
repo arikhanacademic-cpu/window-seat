@@ -1,0 +1,20 @@
+{
+  "name": "window-seat",
+  "version": "1.0.0",
+  "description": "Ride a real train across the Swiss Alps, live, from a window seat.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-route.mjs",
+    "build:offline": "node test/run-build.mjs",
+    "serve": "python3 -m http.server 8790 -d public",
+    "shots": "node test/shots.mjs",
+    "audio-check": "node test/audio-check.mjs"
+  },
+  "devDependencies": {
+    "leaflet": "1.9.4",
+    "playwright": "^1.48.0",
+    "three": "0.128.0"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
